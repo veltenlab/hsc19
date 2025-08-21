@@ -69,6 +69,7 @@ associate_numeric_outcome<- function(decomp, metadata, outcome.name, other.predi
 #'@param outcome.name Column name from \code{metadata} that contains the outcome of interest
 #'@param other.predictors Names of any other columns in \code{metadata} that may serve as 0-shot predictors for the outcome
 #'@param run.ML Whether to run machine-learning models.
+#'@param arbitrary.models Arbitrary linear regression models, based on columns of \code{metadata}, that should also be included in the comparison
 #'@param genelists List of character vectors of gene names. If \code{run.ML=TRUE}, LASSO regression using these genes as input will be performed and compared to the other models.
 #'@param replicates Number of times to repeat CV calculation with different train-test splits. Only used if \code{run.ML=TRUE}
 #'@param cores Number of cores to use (if replicates > 1)
@@ -85,7 +86,7 @@ associate_numeric_outcome<- function(decomp, metadata, outcome.name, other.predi
 #'
 #'@return A list with entries \code{p.values} and, if \code{run.ML} is set, \code{aucs}, their standard deviation across replicates, and info on the different folds
 #'@export
-associate_binary_outcome<- function(decomp, metadata, outcome.name, other.predictors=NULL, genelists = NULL, run.ML=T, cores = 6, replicates = 3, use.s = "lambda.min") {
+associate_binary_outcome<- function(decomp, metadata, outcome.name, other.predictors=NULL, arbitrary.models = NULL, genelists = NULL, run.ML=T, cores = 6, replicates = 3, use.s = "lambda.min") {
 
   metadata <- metadata[colnames(decomp),]
   modelf <- cbind(metadata, t(decomp@result))
@@ -102,7 +103,7 @@ associate_binary_outcome<- function(decomp, metadata, outcome.name, other.predic
   if(run.ML) {
     modelf <- cbind(modelf, decomp@pca@cell.embeddings)
 
-    cv_result <- parallel::mclapply(1:replicates, function(void) suppressWarnings(get_cv_binary(decomp, modelf, outcome.name, other.predictors, genelists, use.s)), mc.cores= cores)
+    cv_result <- parallel::mclapply(1:replicates, function(void) suppressWarnings(get_cv_binary(decomp, modelf, outcome.name, other.predictors, genelists, arbitrary.models, use.s)), mc.cores= cores)
     aucs <- do.call(rbind,lapply(cv_result, "[[", 1))
     best.factor <- table(unlist(lapply(cv_result, "[[",2)))
     best.other <- table(unlist(lapply(cv_result, "[[",3)))
@@ -358,7 +359,7 @@ get_auc <- function(probs, y) {
   as.numeric(pROC::auc(y, probs, quiet = TRUE))
 }
 
-get_cv_binary <- function(decomp, modelf, outcome.name, other.predictors, genelists, use.s) {
+get_cv_binary <- function(decomp, modelf, outcome.name, other.predictors, genelists, arbitrary.models, use.s) {
   # ensure binary coding and no NAs in outcome
   y <- modelf[, outcome.name]
   if (is.logical(y)) y <- as.integer(y)
@@ -389,6 +390,8 @@ get_cv_binary <- function(decomp, modelf, outcome.name, other.predictors, geneli
   modelf$predicted_de_lasso <- NA_real_
   predicted_genelists <- replicate(length(genelists), rep(NA_real_, nrow(modelf)), simplify = FALSE)
   names(predicted_genelists) <- names(genelists)
+  predicted_arbitrary <- replicate(length(arbitrary.models), rep(NA_real_, nrow(modelf)), simplify = FALSE)
+  names(predicted_arbitrary) <- names(arbitrary.models)
 
   best_factors <- c()
   best_others <- c()
@@ -515,6 +518,17 @@ get_cv_binary <- function(decomp, modelf, outcome.name, other.predictors, geneli
           as.numeric(predict(mo_gllasso, as.matrix(ma_te), s = use.s, type = "response"))
       }
     }
+
+    #7. arbitrary models
+    if (length(arbitrary.models) > 0) {
+      for (mi in seq_along(arbitrary.models)) {
+
+        f <- as.formula(paste( outcome.name, "~",arbitrary.models[mi]))
+        mo_ab <- glm(f, data = train, family = binomial())
+        predicted_arbitrary[[mi]][modelf$set == i] <- as.numeric(predict(mo_ab, newdata = test, type = "response"))
+      }
+    }
+
   }
 
   # Compute ROC AUCs for each model's out-of-fold probabilities
@@ -532,6 +546,9 @@ get_cv_binary <- function(decomp, modelf, outcome.name, other.predictors, geneli
 
   if (length(genelists) > 0) {
     aucs <- c(aucs, sapply(predicted_genelists, function(x) get_auc(x, y_all)))
+  }
+  if (length(arbitrary.models) > 0) {
+    aucs <- c(aucs, sapply(predicted_arbitrary, function(x) get_auc(x, y_all)))
   }
 
   return(list(aucs = aucs, best.factor = best_factors, best.other = best_others))
