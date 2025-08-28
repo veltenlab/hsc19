@@ -525,7 +525,20 @@ get_cv_binary <- function(decomp, modelf, outcome.name, other.predictors, geneli
 
         f <- as.formula(paste( outcome.name, "~",arbitrary.models[mi]))
         mo_ab <- glm(f, data = train, family = binomial())
-        predicted_arbitrary[[mi]][modelf$set == i] <- as.numeric(predict(mo_ab, newdata = test, type = "response"))
+
+        if (grepl("WHO_classification", arbitrary.models[mi])) {
+        #handle special case: Force test factor to training levels; unseen levels become NA
+        test$WHO_classification <- factor(test$WHO_classification,
+                                          levels = unique(train$WHO_classification))
+
+        # Predict only where the factor is not NA
+        ok <- !is.na(test$WHO_classification)
+        predicted_arbitrary[[mi]][modelf$set == i] <- rep(NA_real_, nrow(test))
+        predicted_arbitrary[[mi]][modelf$set == i][ok] <- as.numeric(predict(mo_ab, newdata = test[ok, ], type = "response"))
+        } else {
+          predicted_arbitrary[[mi]][modelf$set == i] <- as.numeric(predict(mo_ab, newdata = test, type = "response"))
+        }
+
       }
     }
 
