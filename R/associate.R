@@ -35,7 +35,8 @@ associate_numeric_outcome<- function(decomp, metadata, outcome.name, other.predi
     modelf <- modelf[!is.na(modelf[,outcome.name]),]
   }
   p.values <- data.frame(factor_id = factor(c(sprintf("Factor_%d", 3:20),other.predictors),levels = c(sprintf("Factor_%d", 3:20),other.predictors)),
-                          p_outcome = apply(modelf[,c(sprintf("Factor_%d", 3:20),other.predictors)], 2, function(x) cor.test(x, modelf[,outcome.name])$p.value))
+                          p_outcome = apply(modelf[,c(sprintf("Factor_%d", 3:20),other.predictors)], 2, function(x) cor.test(x, modelf[,outcome.name])$p.value),
+                          sign_outcome = sign(apply(modelf[,c(sprintf("Factor_%d", 3:20),other.predictors)], 2, function(x) cor.test(x, modelf[,outcome.name])$estimate)))
 
   best.factor <- with(subset(p.values, factor_id %in% sprintf("Factor_%d", 3:20)), as.character(factor_id[which.min(p_outcome)]))
   if (!is.null(other.predictors)) best.other <- with(subset(p.values, factor_id %in% other.predictors), as.character(factor_id[which.min(p_outcome)]))
@@ -95,7 +96,8 @@ associate_binary_outcome<- function(decomp, metadata, outcome.name, other.predic
     modelf <- modelf[!is.na(modelf[,outcome.name]),]
   }
   p.values <- data.frame(factor_id = factor(c(sprintf("Factor_%d", 3:20),other.predictors),levels = c(sprintf("Factor_%d", 3:20),other.predictors)),
-                         p_outcome = apply(modelf[,c(sprintf("Factor_%d", 3:20),other.predictors)], 2, function(x) wilcox.test(x[modelf[,outcome.name]],x[!modelf[,outcome.name]])$p.value))
+                         p_outcome = apply(modelf[,c(sprintf("Factor_%d", 3:20),other.predictors)], 2, function(x) wilcox.test(x[modelf[,outcome.name]],x[!modelf[,outcome.name]])$p.value),
+                         sign_outcome = sign(apply(modelf[,c(sprintf("Factor_%d", 3:20),other.predictors)], 2, function(x) wilcox.test(x[modelf[,outcome.name]],x[!modelf[,outcome.name]], conf.int = TRUE)$estimate)))
 
   best.factor <- with(subset(p.values, factor_id %in% sprintf("Factor_%d", 3:20)), as.character(factor_id[which.min(p_outcome)]))
   if (!is.null(other.predictors)) best.other <- with(subset(p.values, factor_id %in% other.predictors), as.character(factor_id[which.min(p_outcome)]))
@@ -183,19 +185,28 @@ associate_survival_outcome <- function(
   # ---- Univariate Cox p-values for candidate predictors ----
   cand <- c(sprintf("Factor_%d", 3:20), other.predictors)
   cand <- cand[cand %in% colnames(modelf)]
-  get_p <- function(cl) {
+
+  get_stats <- function(cl) {
     f <- as.formula(paste0("survival::Surv(", outcome.time.name, ",", outcome.status.name, ") ~ ", cl))
     fit <- try(survival::coxph(f, data = modelf, ties = "efron"), silent = TRUE)
-    if (inherits(fit, "try-error")) return(NA_real_)
+    if (inherits(fit, "try-error")) return(c(p = NA_real_, coef = NA_real_))
     co <- try(summary(fit)$coefficients, silent = TRUE)
-    if (inherits(co, "try-error") || nrow(co) < 1) return(NA_real_)
-    as.numeric(co[1, "Pr(>|z|)"])
+    if (inherits(co, "try-error") || nrow(co) < 1) return(c(p = NA_real_, coef = NA_real_))
+    c(p = as.numeric(co[1, "Pr(>|z|)"]),
+      coef = as.numeric(co[1, "coef"]))  # sign via coef (HR = exp(coef))
   }
-  p_outcome <- if (length(cand)) sapply(cand, get_p) else numeric(0)
+
+  stats <- if (length(cand)) {
+    vapply(cand, get_stats, FUN.VALUE = c(p = NA_real_, coef = NA_real_))
+  } else {
+    matrix(numeric(0), nrow = 2, dimnames = list(c("p", "coef"), NULL))
+  }
+
   p.values <- data.frame(
-    factor_id = factor(cand, levels = c(sprintf("Factor_%d", 3:20), other.predictors)),
-    p_outcome = p_outcome,
-    row.names = cand
+    factor_id    = factor(cand, levels = c(sprintf("Factor_%d", 3:20), other.predictors)),
+    p_outcome    =  as.numeric(stats["p", ]),
+    sign_outcome = sign(as.numeric(stats["coef", ])),
+    row.names    = cand
   )
 
   if (run.ML) {
