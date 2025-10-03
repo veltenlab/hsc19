@@ -75,6 +75,7 @@ associate_numeric_outcome<- function(decomp, metadata, outcome.name, other.predi
 #'@param replicates Number of times to repeat CV calculation with different train-test splits. Only used if \code{run.ML=TRUE}
 #'@param cores Number of cores to use (if replicates > 1)
 #'@param use.s Regularization to use for LASSO, one of \code{lambda.min} and \code{lambda.1se}
+#'@param ROCs If full ROC curves should be returned (if FALSE, only returns AUCs)
 #'
 #'@details	If \code{run.ML} is set, the function will set up a 10 fold cross validation scheme (or leave one out CV if <50 observations). On the train set, it will perform the following:
 #'\itemize{
@@ -87,7 +88,7 @@ associate_numeric_outcome<- function(decomp, metadata, outcome.name, other.predi
 #'
 #'@return A list with entries \code{p.values} and, if \code{run.ML} is set, \code{aucs}, their standard deviation across replicates, and info on the different folds
 #'@export
-associate_binary_outcome<- function(decomp, metadata, outcome.name, other.predictors=NULL, arbitrary.models = NULL, genelists = NULL, run.ML=T, cores = 6, replicates = 3, use.s = "lambda.min") {
+associate_binary_outcome<- function(decomp, metadata, outcome.name, other.predictors=NULL, arbitrary.models = NULL, genelists = NULL, run.ML=T, cores = 6, replicates = 3, use.s = "lambda.min", ROCs = F) {
 
   metadata <- metadata[colnames(decomp),]
   modelf <- cbind(metadata, t(decomp@result))
@@ -105,11 +106,17 @@ associate_binary_outcome<- function(decomp, metadata, outcome.name, other.predic
   if(run.ML) {
     modelf <- cbind(modelf, decomp@pca@cell.embeddings)
 
-    cv_result <- parallel::mclapply(1:replicates, function(void) suppressWarnings(get_cv_binary(decomp, modelf, outcome.name, other.predictors, genelists, arbitrary.models, use.s)), mc.cores= cores)
+    cv_result <- parallel::mclapply(1:replicates, function(void) suppressWarnings(get_cv_binary(decomp, modelf, outcome.name, other.predictors, genelists, arbitrary.models, use.s, ROCs)), mc.cores= cores)
     aucs <- do.call(rbind,lapply(cv_result, "[[", 1))
     best.factor <- table(unlist(lapply(cv_result, "[[",2)))
     best.other <- table(unlist(lapply(cv_result, "[[",3)))
-    return(list(p.values = p.values, aucs = colMeans(aucs), aucs.sd = apply(aucs, 2,sd), best.factor = best.factor, best.other = best.other))
+    if (ROCs)  {
+      rocs <- lapply(cv_result, "[[", 4)
+      return(list(p.values = p.values, aucs = colMeans(aucs), aucs.sd = apply(aucs, 2,sd), best.factor = best.factor, best.other = best.other, rocs = rocs))
+    } else {
+      return(list(p.values = p.values, aucs = colMeans(aucs), aucs.sd = apply(aucs, 2,sd), best.factor = best.factor, best.other = best.other))
+    }
+
     # aucs <- get_cv_binary(decomp, modelf, outcome.name, other.predictors, genelists, use.s)
     # return(list(p.values = p.values, aucs = aucs))
 
@@ -370,7 +377,17 @@ get_auc <- function(probs, y) {
   as.numeric(pROC::auc(y, probs, quiet = TRUE))
 }
 
-get_cv_binary <- function(decomp, modelf, outcome.name, other.predictors, genelists, arbitrary.models, use.s) {
+get_full_auc <- function(probs, y) {
+  if (all(is.na(probs))) return(NA_real_)
+  # coerce y to factor with positive level last (pROC uses the second level as "event")
+  if (is.logical(y)) y <- as.integer(y)
+  if (is.numeric(y)) y <- factor(y, levels = c(0,1))
+  if (!inherits(y, "factor") || length(levels(y)) != 2) stop("Outcome must be binary.")
+  if (length(unique(y[!is.na(y)])) < 2) return(NA_real_)
+  pROC::roc(response = y, predictor = probs, quiet = TRUE)
+}
+
+get_cv_binary <- function(decomp, modelf, outcome.name, other.predictors, genelists, arbitrary.models, use.s, ROCs) {
   # ensure binary coding and no NAs in outcome
   y <- modelf[, outcome.name]
   if (is.logical(y)) y <- as.integer(y)
@@ -557,6 +574,8 @@ get_cv_binary <- function(decomp, modelf, outcome.name, other.predictors, geneli
 
   # Compute ROC AUCs for each model's out-of-fold probabilities
   y_all <- modelf[, outcome.name]
+
+
   aucs <- c(
     AUC.best.factor   = get_auc(modelf[, "predicted_best_factor"],   y_all),
     AUC.best.other    = get_auc(modelf[, "predicted_best_other"],    y_all),
@@ -575,7 +594,31 @@ get_cv_binary <- function(decomp, modelf, outcome.name, other.predictors, geneli
     aucs <- c(aucs, sapply(predicted_arbitrary, function(x) get_auc(x, y_all)))
   }
 
-  return(list(aucs = aucs, best.factor = best_factors, best.other = best_others))
+  if (ROCs) {
+    rocs <- list(
+      AUC.best.factor   = get_full_auc(modelf[, "predicted_best_factor"],   y_all),
+      AUC.best.other    = get_full_auc(modelf[, "predicted_best_other"],    y_all),
+      AUC.logit.factors = get_full_auc(modelf[, "predicted_factors"],       y_all),
+      AUC.lasso.factors = get_full_auc(modelf[, "predicted_factors_lasso"], y_all),
+      AUC.logit.de      = get_full_auc(modelf[, "predicted_de"],            y_all),
+      AUC.lasso.de      = get_full_auc(modelf[, "predicted_de_lasso"],      y_all),
+      AUC.logit.pcr     = get_full_auc(modelf[, "predicted_pcr"],           y_all),
+      AUC.lasso.pcr     = get_full_auc(modelf[, "predicted_pcr_lasso"],     y_all)
+    )
+
+    if (length(genelists) > 0) {
+      rocs <- c(rocs, lapply(predicted_genelists, function(x) get_full_auc(x, y_all)))
+    }
+    if (length(arbitrary.models) > 0) {
+      rocs <- c(rocs, lapply(predicted_arbitrary, function(x) get_full_auc(x, y_all)))
+    }
+
+    return(list(aucs = aucs, best.factor = best_factors, best.other = best_others, rocs = rocs))
+  } else {
+    return(list(aucs = aucs, best.factor = best_factors, best.other = best_others))
+  }
+
+
 }
 
 # helper: Harrell's C-index on out-of-fold predictions
