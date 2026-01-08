@@ -2,7 +2,7 @@
 title: "Decomposition of clonal HSC transcriptomes (LARRY/DARLIN)"
 output: rmarkdown::html_vignette
 vignette: >
-  %\VignetteIndexEntry{2. Application: Clonal HSC properties (LARRY/DARLIN, Figure 3D-F)}
+  %\VignetteIndexEntry{Application: Clonal HSC properties (LARRY/DARLIN, Figure 3D-F)}
   %\VignetteEngine{knitr::rmarkdown}
   %\VignetteEncoding{UTF-8}
 ---

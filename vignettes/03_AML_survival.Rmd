@@ -2,7 +2,7 @@
 title: "Decomposition of AML transcriptomes to predict survival"
 output: rmarkdown::html_vignette
 vignette: >
-  %\VignetteIndexEntry{3. Application: Survival in AML (Figure 4A-D)}
+  %\VignetteIndexEntry{Application: Survival in AML (Figure 4A-D)}
   %\VignetteEngine{knitr::rmarkdown}
   %\VignetteEncoding{UTF-8}
 ---

@@ -2,7 +2,7 @@
 title: "Decomposition of human ageing"
 output: rmarkdown::html_vignette
 vignette: >
-  %\VignetteIndexEntry{1. Basic package usage: Human Ageing (Figure 3B,C)}
+  %\VignetteIndexEntry{Basic package usage: Human Ageing (Figure 3B,C)}
   %\VignetteEngine{knitr::rmarkdown}
   %\VignetteEncoding{UTF-8}
 ---

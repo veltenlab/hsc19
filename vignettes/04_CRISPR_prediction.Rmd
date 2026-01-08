@@ -2,7 +2,7 @@
 title: "Predicting effect of CRISPR KOs by GRP decomposition"
 output: rmarkdown::html_vignette
 vignette: >
-  %\VignetteIndexEntry{4. Advanced usage: Predicting effect of CRISPR KOs (Figure 3G)}
+  %\VignetteIndexEntry{Advanced usage: Predicting effect of CRISPR KOs (Figure 3G)}
   %\VignetteEngine{knitr::rmarkdown}
   %\VignetteEncoding{UTF-8}
 ---
