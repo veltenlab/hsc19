@@ -1,0 +1,385 @@
+---
+title: "Decomposition of clonal HSC transcriptomes (LARRY/DARLIN)"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{2. Application: Clonal HSC properties (LARRY/DARLIN, Figure 3D-F)}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup, warning=F, message=F}
+require(Seurat)
+require(hsc19)
+require(plyr)
+require(ggplot2)
+require(ggnewscale)
+require(ggrepel)
+set.seed(1337)
+```
+
+## Summary
+
+This vignette decomposes clonal HSC transcriptomes into 19 GRPs and identifies associations with clone function. It investigates both post-transplant hematopoiesis (using [LARRY barcodes](https://doi.org/10.1038/s41586-020-2503-6)) and native hematopoiesis (using [DARLIN barcodes](https://linkinghub.elsevier.com/retrieve/pii/S0092-8674(23)01040-1))
+
+## Process LARRY
+
+### Data preparation
+
+We download a LARRY scRNA-seq dataset (from [Scherer et al., 2025](https://www.nature.com/articles/s41586-025-09041-8)), subset to cells annotated as HSC/MPP1, and compute pseudobulks per clone. We also compute clonal properties, such as the output (non-HSC per HSC) and whether the clone has any output.
+
+```{r prepareSeurat, eval=T, warning=F, message=F}
+
+if (!file.exists("data_LARRY/seurat_LK_LSK.RDS")) download.file(
+  "https://ndownloader.figshare.com/files/42587815",
+  destfile = "data_LARRY/seurat_LK_LSK.RDS",
+  mode = "wb"
+)
+
+larry <- readRDS("data_LARRY/seurat_LK_LSK.RDS")
+larry$LARRY <- gsub("_","-", larry$LARRY)
+larry_HSC <- subset(larry, CellType %in% c("HSC/MPP1")) 
+larry_HSC_pseudobulk <- AggregateExpression(larry_HSC, group.by = "LARRY", return.seurat = T, verbose = F)
+larry_HSC_pseudobulk <- FindVariableFeatures(larry_HSC_pseudobulk, verbose = F)
+larry_HSC_pseudobulk <- AddModuleScore(larry_HSC_pseudobulk, features = alejo_lists, name = "alejo", verbose = F) #Add expression scores for gene signatures defined by others
+
+clone_info <- ddply(larry@meta.data, "LARRY",summarise,
+                    n = length(LARRY),
+                    n_hsc = sum(CellType == "HSC/MPP1"),
+                    n_nonhsc = sum(CellType != "HSC/MPP1"))
+clone_info <- within(clone_info,{
+  f_clonesize <- n/sum(n)
+  A_output <- (n_nonhsc / sum(n_nonhsc)) / (0.0001 + (n_hsc / sum(n_hsc)))
+  use <- n_hsc > 0
+})
+
+clone_info <- subset(clone_info, !is.na(LARRY))
+rownames(clone_info) <- clone_info$LARRY
+clone_info <- merge(clone_info, larry_HSC_pseudobulk@meta.data[, grepl("LARRY|alejo", colnames(larry_HSC_pseudobulk@meta.data))])
+colnames(clone_info)[grepl("alejo", colnames(clone_info))] <- names(alejo_lists)
+
+clone_info$output_log <- log10(clone_info$A_output+ 0.01)
+clone_info$size_log <- log10(clone_info$f_clonesize)
+clone_info$output_binary <- clone_info$A_output > 0
+
+rownames(clone_info) <- clone_info$LARRY
+```
+
+### Decompose data into GRPs
+
+```{r decompose}
+result_larry <- decompose(s = larry_HSC_pseudobulk)
+```
+
+### Associate GRPs with clone function
+
+The `associate` function here computes both p-value associations, and runs machine learning to compare the predictve value of these predictors, other predictors, and the whole transcriptome (see also manuscript, methods section)
+
+```{r associate}
+grp2output_larry_output <- associate_numeric_outcome(result_larry, clone_info, "output_log", other.predictors = names(alejo_lists), run.ML = T, replicates = 10, cores = 10, genelists = alejo_lists)
+
+grp2output_larry_binary <- associate_binary_outcome(result_larry, clone_info, "output_binary", other.predictors = names(alejo_lists), run.ML = T, replicates = 10, cores = 10, genelists = alejo_lists, ROCs = T) #captures if it
+
+```
+
+## Process DARLIN
+
+<details>
+<summary><strong>Data preparaiton is conceptually the same as in LARRY, but a bit more involved (click to expand). </strong></summary>
+
+First, download the complete DARLIN Data and code.
+
+```{sh download_darlin, eval=F}
+wget -O DARLIN_public.zip https://zenodo.org/records/11929508/files/DARLIN_public.zip?download=1
+unzip DARLIN_public.zip
+```
+
+Second, reproduce the code by the DARLIN authors to create an adata object that contains clone & cell type info. This code is based on a package, COSPAR, that was not trivial to install, I used:
+
+```{sh install_cospar, eval=F}
+conda create -n cospar-pip -c conda-forge python=3.10 pip
+conda activate cospar-pip
+pip install "scikit-learn>=1.2" scanpy cospar
+```
+
+And then I had to fix the code in `envs/cospar-pip/lib/python3.10/site-packages/cospar/tool/_clone.py` to replace some instances of `.A` by `toarray()`. Then I prepared an `adata` object in python that had both clone and transcriptome / cell type annotation info.
+
+```{python preprocess_darlin, eval=F}
+import cospar as cs
+import scanpy as sc
+import pandas as pd
+import scipy.sparse as ssp
+import seaborn as sns
+from matplotlib import pyplot as plt
+import numpy as np
+import os
+
+## setting cospar
+cs.logging.print_version()
+cs.settings.verbosity=0
+
+## notebook specific parameters
+target_sample='20220815_LL837_10X_3A'
+read_cutoff=3 # Read cutoff: each UMI must be covered by at least 3 reads
+max_rep_N=1 # Mouse replicate number cutoff: this allele can appear in less than max_rep_N mouse samples in our allele bank
+tissues=['Femur','Skull' , 'Spleen' ]
+
+## setup folders 
+root_path='DARLIN_public/DATA' # the directory where data is located
+sc.settings.figdir=figure_path
+cs.settings.figure_path=figure_path
+saved_adata_path='data_LARRY/tissue_adata_refined_20221106_joint.h5ad'
+
+RNA_path=f'{root_path}/{target_sample}/RNA/result_RNA_10X/data/tissue_removeCycle_adata_preprocessed.h5ad'
+adata=sc.read(RNA_path)
+adata.obs['cell_type']=adata.obs['cell_type'].replace({'Meg': 'MkP'})
+
+#### Load clone data and integrate with RNA data
+#The UMI count here is for the same allele across all cells, not within the same cell
+df_sc_data=pd.read_csv(f'{root_path}/{target_sample}/df_sc_data_{read_cutoff}.csv') 
+
+#this data has correct UMI count information
+df_sc_data['RNA_id']=df_sc_data['sample'].apply(lambda x: '_'.join(x.split('-')))+'_'+df_sc_data['cell_bc']
+
+# Identify reliable alleles and the corresponding RNA_id (UMI) should match that with transcriptome information
+df_sc_data_HQ_with_RNA=df_sc_data[(~pd.isna(df_sc_data['joint_prob'])) 
+                         & (df_sc_data['sample_count']<=max_rep_N) 
+                         & (df_sc_data['RNA_id'].isin(adata.obs_names))] # & (df_sc_data['joint_allele_num']<5)]
+                         
+if not (df_sc_data['sample_count'].max()==3):
+    raise ValueError('Should only use the Gr allele bank with 3 samples')
+  
+cs.pp.get_X_clone(adata,df_sc_data_HQ_with_RNA['RNA_id'],df_sc_data_HQ_with_RNA['joint_clone_id'])
+
+cs.pp.initialize_adata_object(adata)
+
+adata.write_h5ad(saved_adata_path)
+
+# df_clone=cs.tl.clone_statistics(adata,joint_variable='state_info');
+# df_clone.to_csv("data_LARRY/DARLIN_clone_info.csv")
+```
+
+Finally I loaded this in R and performed the subsetting and pseudobulk calculation
+
+```{r preprocess_darlin2, eval=F}
+require(anndata)
+data <- read_h5ad("data_LARRY/tissue_adata_refined_20221106_subset.h5ad")
+clone_id <- apply(data$obsm$X_clone, 1, function(x) if(any(x > 0)) which(x > 0)-1 else NA)
+S <- CreateSeuratObject(counts = t(as.matrix(data$X)), meta.data = data$obs,min.features = 500, min.cells = 30)
+names(clone_id) <- colnames(S)
+S <- AddMetaData(S, clone_id, col.name = "clone_id")
+
+S <- NormalizeData(S)
+S <- FindVariableFeatures(S)
+S<- ScaleData(S)
+S<- RunPCA(S)
+S<- FindNeighbors(S, dims=1:30)
+S<- FindClusters(S)
+S <- RunUMAP(S,dims = 1:20)
+
+capitalize <- function(x) {
+  sapply(x, function(y) {
+    if (is.na(y) || y == "") return(y)
+    paste0(toupper(substr(y, 1, 1)), tolower(substr(y, 2, nchar(y))))
+  }, USE.NAMES = FALSE)
+}
+
+S <- CellCycleScoring(S, capitalize(cc.genes$s.genes),capitalize(cc.genes$g2m.genes))
+#FeaturePlot(S, c("S.Score","G2M.Score"))
+#there is a massive group of cells in cycle
+#get rid of this
+S <- subset(S, idents = c(1,11,5,4,6), invert=T)
+
+S <- NormalizeData(S)
+S <- FindVariableFeatures(S)
+S<- ScaleData(S)
+S<- RunPCA(S)
+S<- FindNeighbors(S, dims=1:30)
+S<- FindClusters(S)
+S <- RunUMAP(S, dims = 1:30)
+
+#properly dissect those
+darlin_HSC <- subset(S, cell_type %in% c("HSC"))
+
+darlin_HSC <- NormalizeData(darlin_HSC)
+darlin_HSC <- FindVariableFeatures(darlin_HSC, nfeatures = 1000)
+darlin_HSC<- ScaleData(darlin_HSC)
+darlin_HSC<- RunPCA(darlin_HSC)
+darlin_HSC<- FindNeighbors(darlin_HSC, dims=1:20)
+darlin_HSC<- FindClusters(darlin_HSC)
+darlin_HSC <- RunUMAP(darlin_HSC, dims = 1:20)
+#FeaturePlot(darlin_HSC, c("Ly6a","Hlf")) #seems appropriate
+
+darlin_HSC_pseudobulk <- AggregateExpression(darlin_HSC, group.by = "clone_id", return.seurat = T)
+darlin_HSC_pseudobulk <- FindVariableFeatures(darlin_HSC_pseudobulk, verbose = F)
+darlin_HSC_pseudobulk <- AddModuleScore(darlin_HSC_pseudobulk, features = alejo_lists, name = "alejo", verbose = F)
+saveRDS(darlin_HSC_pseudobulk, "data_LARRY/DARLIN_pseudobulks.rds")
+```
+
+Finally I computed summaries of clone function
+
+```{r darlion_clonefunction, eval=F}
+darlin_clone_info <- ddply(S@meta.data, "clone_id",summarise,
+                    clone_size = length(clone_id),
+                    n_hsc = sum(cell_type == "HSC", na.rm=T),
+                    n_nonhsc = sum(cell_type != "HSC", na.rm=T),
+                    n_mkp = sum(cell_type != "MkP", na.rm=T),
+                    n_nonmkp = sum(cell_type != "MkP" & cell_type != "HSC", na.rm=T),
+                    n_lmpp = sum(cell_type != "LMPP", na.rm=T),
+                    n_nonlmpp = sum(cell_type != "LMPP" & cell_type != "HSC", na.rm=T),
+                    n_celltypes = length(unique(cell_type)))
+darlin_clone_info$clone_id <- paste0("g", darlin_clone_info$clone_id)
+darlin_clone_info <- within(darlin_clone_info,{
+  f_clonesize <- clone_size/sum(clone_size)
+  A_output <- (n_nonhsc / sum(n_nonhsc)) / (0.0001 + (n_hsc / sum(n_hsc)))
+  Mk_output <- (n_nonmkp / sum(n_nonmkp)) / (0.0001 + (n_mkp / sum(n_mkp)))
+  Ly_output <- (n_nonlmpp / sum(n_nonlmpp)) / (0.0001 + (n_lmpp / sum(n_lmpp)))
+  use <- n_hsc > 0
+})
+
+darlin_clone_info <- merge(darlin_clone_info, darlin_HSC_pseudobulk@meta.data[, grepl("clone_id|alejo", colnames(darlin_HSC_pseudobulk@meta.data))])
+colnames(darlin_clone_info)[grepl("alejo", colnames(darlin_clone_info))] <- names(alejo_lists)
+
+darlin_clone_info$output_log <- log10(darlin_clone_info$A_output+ 0.01)
+darlin_clone_info$output_binary <- darlin_clone_info$A_output>0
+darlin_clone_info$mk_binary <- darlin_clone_info$Mk_output>0
+darlin_clone_info$ly_binary <- darlin_clone_info$Ly_output>0
+darlin_clone_info$f_clonesize_log <- log(darlin_clone_info$f_clonesize)
+# darlin_info$clone_id <- paste0("g", darlin_info$clone_id)
+# darlin_clone_info <- merge(darlin_clone_info, darlin_info, all.x = T)
+rownames(darlin_clone_info) <- darlin_clone_info$clone_id
+saveRDS(darlin_clone_info, file = "data_LARRY/DARLIN_clone_info.rds")
+```
+
+
+</details>
+
+### Decompose data into GRPs
+
+```{r decompose_darlin}
+darlin_HSC_pseudobulk <- readRDS("data_LARRY/DARLIN_pseudobulks.rds")
+result_darlin <- decompose(s = darlin_HSC_pseudobulk)
+```
+
+### Associate GRPs with clone function
+
+```{r associate_darlin}
+
+darlin_clone_info <- readRDS("data_LARRY/DARLIN_clone_info.rds")
+grp2output_darlin_output <- associate_numeric_outcome(result_darlin, darlin_clone_info, "output_log", other.predictors = names(alejo_lists), run.ML = T, replicates = 10, cores = 10, genelists = alejo_lists)
+
+grp2output_darlin_binary <- associate_binary_outcome(result_darlin, darlin_clone_info, "output_binary", other.predictors = names(alejo_lists), run.ML = T, replicates = 10, cores = 10, genelists = alejo_lists, ROCs = T)
+
+```
+
+## Create figures
+
+### Figure 3D: P values
+
+```{r figure3d, fig.width=3.5, fig.height=2.5}
+
+D <- list(larry_output = grp2output_larry_output, larry_activity = grp2output_larry_binary,
+          darlin_output = grp2output_darlin_output, darlin_activity = grp2output_darlin_binary)
+pvalues <- lapply(D, "[[", 1)
+pvalues <- lapply(names(pvalues), function(n) { x <- pvalues[[n]]; x$phenotype <- n; x} )
+
+pvalues <- do.call(rbind, pvalues)
+pvalues$experiment <- toupper(gsub("_.+", "", pvalues$phenotype))
+pvalues$phenotype <- gsub("larry_|darlin_", "", pvalues$phenotype)
+pvalues$show_value <- with(pvalues, ifelse(p_outcome < 0.1, -log10(p_outcome), log10(0.1)))
+pvalues <- subset(pvalues, grepl("Factor_", factor_id))
+pvalues$factor_id <- factor(pvalues$factor_id, levels = sprintf("Factor_%d",USEGRPS))
+labels <- c( "output" = "Output", "activity" = "Activity")
+ylabels <- gsub("Factor_", "", factor_annotation$factor_id); names(ylabels) <- factor_annotation$factor_id
+any_sig <- sapply(names(ylabels), function(x) any(pvalues$p_outcome[pvalues$factor_id == x] < 0.05))
+ylabels[!any_sig] <- ""
+pvalues <- merge(pvalues, factor_annotation)
+
+fig3d <- ggplot(aes(x = factor_id, y = phenotype), data = pvalues) + 
+  geom_blank() +
+  geom_tile(aes(fill =show_value), data = subset(pvalues, p_outcome < 0.05 & sign_outcome * multiply_with == -1)) +
+  scale_fill_gradientn(name = "p-value (neg)", colors = c("white","lightblue","blue", "blue", "darkblue"), breaks = c(-log10(0.05), -log10(0.1 / (19*4)), 5), labels = c("0.05", "", "1e-5"), limits = c(-log10(0.05), max(pvalues$show_value)), na.value = "white") +
+  new_scale_fill() + 
+  geom_tile(aes(fill =show_value),data = subset(pvalues, p_outcome < 0.05 & sign_outcome * multiply_with == 1)) +
+  geom_text(aes(label = ifelse(p.adjust(p_outcome,"fdr") < 0.1, "*", "")), color = "white",size=4) + 
+  scale_fill_gradientn(name = "p-value (pos)", colors = c("white","#FFAAAA","red", "red", "darkred"), breaks = c(-log10(0.05), -log10(0.1 / (19*4)), 5), labels = c("0.05", "", "1e-5"), limits = c(-log10(0.05), max(pvalues$show_value)), na.value = "white") +
+  facet_grid(experiment~.) + scale_y_discrete(labels = labels, name = "HSC function") +  scale_x_discrete(name = "GRP", labels = ylabels) +
+  theme_bw() + theme(panel.grid = element_blank(), legend.position = "bottom") + scale_size_area(guide= "none", max_size = 3) +
+  scale_shape_manual(values = c("1" = 24, "-1" = 25), guide="none")
+
+print(fig3d)
+```
+
+### Figure 3E: Box plots
+
+```{r fig3eleft, fig.width=1.6, fig.height=1.8}
+forplot <- cbind(clone_info, t(result_larry@result))
+
+fig3el <- qplot(x = output_binary, y = Factor_20 * factor_annotation$multiply_with[factor_annotation$factor_id == "Factor_20"], data = forplot, geom = "boxplot") + ylab("GRP20\n(ribosomes)") + scale_x_discrete("Active", labels = c("FALSE" = sprintf("No\n(n=%d)", sum(!forplot$output_binary)), "TRUE" = sprintf("Yes\n(n=%d)", sum(forplot$output_binary)))) +
+  theme_bw() + theme(panel.grid = element_blank())
+print(fig3el)
+```
+
+```{r fig3eright, fig.width=2.5, fig.height=1.8}
+forplot$A_output_discrete <- infotheo::discretize(forplot$A_output, nbins = 4)$X
+fig3er <- qplot(x = as.factor(A_output_discrete), y = Factor_18 * factor_annotation$multiply_with[factor_annotation$factor_id == "Factor_18"], data = forplot, geom = "boxplot") + ylab("GRP18\n(Progenitor activ.)")+
+    theme_bw() + theme(panel.grid = element_blank()) + scale_x_discrete("Output (non-HSC/HSC), quartiles", labels = paste(1:4,"\n"))
+print(fig3er)
+```
+
+### Figure 3F: Predictive performance
+
+```{r fig3f, fig.width=6, fig.height=2.8}
+predictive_performance <- data.frame(
+  measure = do.call(c, lapply(D, function(x) names(x[[2]]))),
+  auc.rqsr = do.call(c, lapply(D, "[[", 2)),
+  auc.rqsr.sd = do.call(c, lapply(D, "[[", 3)))
+predictive_performance$experiment <- ifelse(grepl("larry", rownames(predictive_performance)), "LARRY", "DARLIN")
+predictive_performance$phenotype <- gsub(".+_(\\D+)\\d+","\\1",rownames(predictive_performance))
+predictive_performance$zeroshot <- predictive_performance$measure %in% c("R2.best.factor", "R2.best.other", "AUC.best.factor", "AUC.best.other")
+predictive_performance$grouping <- with(predictive_performance, ifelse(zeroshot, measure,ifelse(measure %in% c("AUC.lasso.factors","R2.lasso.factors"), "Supervised ML", "Supervised ML")))
+simple <- ddply(predictive_performance, c("experiment","phenotype", "grouping"), summarise, 
+                best = max(auc.rqsr), 
+                best.sd = auc.rqsr.sd[which.max(auc.rqsr)],
+                which.best =  measure[which.max(auc.rqsr)],
+                percent = ifelse( grepl("best.factor|best.other", unique(grouping)), 
+                                 max(D[[sprintf("%s_%s", tolower(unique(experiment)), unique(phenotype))]][[gsub("AUC.|R2.", "", unique(grouping))]]), NA),
+                best.list = ifelse( grepl("best.factor|best.other", unique(grouping)), 
+                                              names(which.max(D[[sprintf("%s_%s", tolower(unique(experiment)), unique(phenotype))]][[gsub("AUC.|R2.", "", unique(grouping))]])), NA)
+                
+                )
+simple$best.list[is.na(simple$best.list)] <- simple$grouping[is.na(simple$best.list)]
+otherlevels <- unique(simple$best.list); otherlevels <- otherlevels[!otherlevels %in% c("Supervised ML",sprintf("Factor_%d",USEGRPS) ) ]
+simple$best.list <- factor(simple$best.list, levels = rev(c("Supervised ML",sprintf("Factor_%d",USEGRPS), otherlevels )))
+simple$which.best <- factor(simple$which.best, levels = c("R2.best.factor", "R2.best.other", "AUC.best.factor", "AUC.best.other", unique(simple$which.best[simple$grouping == "Supervised ML"])))
+
+ylabels <- gsub("Factor_", "GRP ", unique(simple$best.list)); names(ylabels) <- unique(simple$best.list)
+ylabels["High.output_Rodriguez_et_al"] <- "High output"
+ylabels["Serial.engraftment_Rodriguez_et_al"] <- "Serial engraftment"
+ylabels["Multilineage_Rodriguez_et_al"] <- "Multilineage"
+ylabels["dHSC_aHSC_single.cell_Cabezas.Wallscheid_et_al"] <- "dHSC vs. aHSC"
+
+for_combined_plot <- simple
+for_combined_plot$simplegroup <- with(for_combined_plot, factor(gsub("AUC.|R2.", "", grouping), levels = rev(c("Supervised ML", "best.factor", "best.other"))))
+faclabels <- c("output" = "output (R2)", "activity" = "activity (AUC)")
+collabels <- c("Supervised ML" = "Full transcriptome\n(Supervised ML)", "best.other" = "Best published\nTx signature", "best.factor" = "Best GRP")
+
+fig3f <- ggplot(aes(x = best, y = simplegroup, color = simplegroup), data=for_combined_plot) + geom_point() + 
+  geom_errorbarh(aes(xmin= best-best.sd, xmax = best+best.sd), height=0.1) + 
+  geom_text_repel(aes(label = ylabels[as.character(best.list)]), color = "black",size=3, data = subset(for_combined_plot, best.list != "Supervised ML")) + 
+  facet_wrap( ~  factor(experiment, levels = c("LARRY", "DARLIN")) + faclabels[phenotype], scales="free_x", nrow=1) + 
+  theme_bw(base_size=14) + theme(panel.grid = element_blank(), legend.position = "none",axis.text.x =element_text(size=8)) + scale_y_discrete(labels = collabels, name = "Predictor") + 
+  xlab("Predictive performance in 10-fold CV") + scale_x_continuous() + 
+  scale_color_manual( values = c("Supervised ML" = "#666666", "best.other" = "darkblue", "best.factor" = "orange"),
+                      name = "Predictor", labels = collabels) + 
+ geom_vline(aes(xintercept = best), data=subset(for_combined_plot, grouping == "Supervised ML"), linetype = 3)
+
+print(fig3f)
+```
+

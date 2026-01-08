@@ -33,7 +33,7 @@ setMethod(
   "show",
   "decomposition",
   function(object) {
-    cat(sprintf("Decomposition object of %d samples (%s, %s, ...), run on %d genes. 18 GRPs explain %.1f %% of the gene expression variance in your data. For comparison, 18 principal components explain %.1f %%",
+    cat(sprintf("Decomposition object of %d samples (%s, %s, ...), run on %d genes. 19 GRPs explain %.1f %% of the gene expression variance in your data. For comparison, 19 principal components explain %.1f %%",
         ncol(object@result), colnames(object@result)[1], colnames(object@result)[2], length(object@usegenes), 100* object@pve, 100* object@pve_pca))
   }
 )

@@ -1,0 +1,188 @@
+---
+title: "Decomposition of AML transcriptomes to predict survival"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{3. Application: Survival in AML (Figure 4A-D)}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup, warning=F, message=F}
+require(Seurat)
+require(hsc19)
+require(plyr)
+require(ggplot2)
+require(survival)
+require(survminer)
+require(ggnewscale)
+set.seed(1337)
+```
+
+## Summary
+
+This vignette decomposes HSPC transcriptomes from a single-cell RNA-seq atlas into nineteen gene regulatory programs, and identifies GRPs linked to survival.
+
+## Data preparation
+
+We used a single-cell RNA-seq dataset of n=183 AML patients, selected to represent most genetically defined (WHO) groups (Barinka et al., unpublished). This dataset had been annotated by projection on a healthy reference4, to identify the most similar healthy cell type / differentiation state for each cell. We subsetted to cells corresponding to stem and progenitor cells (i.e. up to the promyelocyte stage, and excluding cells resembling mature monocytes, and other mature myeloid, erythroid and lymphoid cells), and summed raw read counts per patient (not shown)
+
+```{r prepareSeurat, eval=T, warning=F, message=F}
+meta <- readRDS("data_AML/metadata.rds") #contains AML-specific transcriptime derived scores
+prog_objc_v1 <- readRDS("data_AML/pseudobulks.rds") #is already a seurat object
+outcomes <- readRDS("data_AML/outcomes.rds")
+
+#compute module scores for gene signatures from Rodriguez-Fraticelli    
+alejo_human <- lapply(alejo_lists, toupper)
+prog_objc_v1 <- AddModuleScore(prog_objc_v1, features = alejo_human, name = "alejo", slot = "data")
+alejo_metadata <- data.frame(RhapsodyID = prog_objc_v1$RhapsodyID,
+                                 prog_objc_v1@meta.data[, grepl("alejo", colnames(prog_objc_v1@meta.data))])
+meta <- merge(meta, alejo_metadata)
+meta <- merge(meta, outcomes)
+
+rownames(meta ) <- meta$RhapsodyID
+rownames(outcomes) <- outcomes$RhapsodyID
+
+prog_objc_v1 <- subset(prog_objc_v1, cells = rownames(meta))
+meta <- meta[colnames(prog_objc_v1),]
+
+```
+
+## Decompose data into GRPs
+
+```{r decompose}
+result <- decompose(s = prog_objc_v1)
+```
+
+## Associate GRPs with outcomes
+
+The `associate` function here computes both p-value associations, and runs machine learning to compare the predictve value of these predictors, other predictors, and the whole transcriptome (see also manuscript, methods section)
+
+```{r associate}
+meta$WHO_classification <- as.factor(meta$WHO_25)
+
+models <- c("Age", "ELN22_risk", "WHO_classification", 
+            "Age+Factor_1", "Age+LSC17_mprog_mean")
+names(models) <- c("Age", "ELN22 risk", "WHO classification", "Age+Factor_1","Age+LSC17")
+
+other_predictors <- c("mean_G2M_score_progenitors", "mean_S_score_progenitors",sprintf("alejo%d",1:length(alejo_lists)),"LSC17_mprog_mean","healthy_perc_prog_malig", "Myelocytes_pt_mean_malig_prog")
+
+#overall survival: all patients
+grp2output_os <- associate_survival_outcome(result, meta, "OS_status", "OS_days", other.predictors = other_predictors, run.ML = T, replicates = 10, cores = 10, arbitrary.models = models)
+
+#overall survival: patients treated with intensive chemotherapy
+intensely_treated <- rownames(meta)[meta$therapy_group == "intensive" & !is.na(meta$best_response_chemo)] 
+meta$response <- meta$best_response_chemo == "CR"
+grp2output_response <- associate_binary_outcome(subset(result, include = intensely_treated), meta[intensely_treated,], "response", other.predictors = other_predictors, run.ML = T, replicates = 10, cores = 10, arbitrary.models = models)
+
+#relapse: Patients who received allo
+with_allo <- rownames(meta)[!is.na(meta$relapse_after_allo_status)]
+grp2output_rfs <- associate_survival_outcome(subset(result, include = with_allo), meta[with_allo,], "relapse_after_allo_status", "relapse_after_allo_days", other.predictors = other_predictors, run.ML = T, replicates = 10, cores = 10, arbitrary.models = models)
+
+```
+
+## Make figures
+
+### Figure 4A
+
+```{r figure4a, fig.width=4.2, fig.height=1.4}
+aml <- list(os = grp2output_os, response = grp2output_response, rfs = grp2output_rfs)
+pvalues <- lapply(aml, "[[", 1)
+pvalues <- lapply(names(pvalues), function(n) {
+  x <- pvalues[[n]]
+  x$observation <- n
+  x <- subset(x, grepl("Factor_", factor_id))
+  x$fdr <- p.adjust(x$p_outcome, "fdr")
+  x
+})
+pvalues <- do.call(rbind, pvalues)
+
+
+pvalues$disease <- "AML"
+pvalues$outcome <- factor(with(pvalues, ifelse(observation == "mds", "OS", toupper(observation))), levels = c("RESPONSE", "OS", "RFS", "DA", "VV"))
+
+pvalues$show_value <- with(pvalues, ifelse(p_outcome < 0.05, -log10(p_outcome), -log10(0.05)))
+pvalues$factor_id <- factor(pvalues$factor_id, levels = sprintf("Factor_%d",USEGRPS))
+ylabels <- gsub("Factor_", "", factor_annotation$factor_id); names(ylabels) <- factor_annotation$factor_id
+any_sig <- sapply(names(ylabels), function(x) any(pvalues$p_outcome[pvalues$factor_id == x] < 0.05))
+ylabels[!any_sig] <- ""
+pvalues <- merge(pvalues, factor_annotation)
+
+fig4a <- ggplot(aes(x = factor_id, y = outcome), data = subset(pvalues, (disease == "AML" & outcome %in% c("RESPONSE", "RFS", "OS") ))) + 
+  geom_blank() +
+  geom_tile(aes(fill =show_value), data = subset(pvalues, (disease == "AML" & outcome %in% c("RESPONSE", "RFS", "OS")) & p_outcome < 0.05 & sign_outcome * multiply_with == -1)) +
+  scale_fill_gradientn(name = "p-value (neg)", colors = c("white","lightblue","blue", "blue", "darkblue"), breaks = c(-log10(0.05), -log10(0.1 / (20*6)), 4), labels = c("0.05", "Bonferroni", "1e-4"), limits = c(-log10(0.05), max(pvalues$show_value)), na.value = "white") +
+  new_scale_fill() + 
+  geom_tile(aes(fill =show_value),data = subset(pvalues, (disease == "AML" & outcome %in% c("RESPONSE", "RFS", "OS")) & p_outcome < 0.05 & sign_outcome * multiply_with == 1)) +
+  scale_fill_gradientn(name = "p-value (pos)", colors = c("white","#FFAAAA","red", "red", "darkred"), breaks = c(-log10(0.05), -log10(0.1 / (20*6)), 4), labels = c("0.05", "Bonferroni", "1e-4"), limits = c(-log10(0.05), max(pvalues$show_value)), na.value = "white") +
+  scale_y_discrete(labels = c("RESPONSE" = "Response"), name = "Outcome") +  scale_x_discrete(name = "GRP", labels = ylabels) +
+  theme_bw() + theme( panel.grid = element_blank()) + scale_size_area(guide= "none", max_size = 3) +
+  geom_text(aes(label = ifelse(p.adjust(p_outcome,"fdr") < 0.1, "*", "")), color = "white",size=4) + 
+  scale_shape_manual(values = c("1" = 24, "-1" = 25), guide="none")
+
+print(fig4a)
+
+```
+### Figure 4B
+
+```{r figure4b, fig.width=5, fig.height=2}
+os_cix <- data.frame(what = names(aml$os$c.index),
+                     cix = aml$os$c.index,
+                     cix.sd = aml$os$c.index.sd)
+best_ML <- subset(os_cix, grepl("C\\.[^b]", what))
+best_ML <- subset(best_ML, cix == max(cix))
+os.cix <- rbind(
+  subset(os_cix, !grepl("C\\.[^b]", what)),
+  best_ML
+)
+os.cix$class <- factor(ifelse(os.cix$what %in% c("Age+LSC17", "Age+Factor_1"), "RNA+Metadata",
+                       ifelse(os.cix$what %in% c("ELN22 risk", "WHO classification", "Age","Age"), "Metadata",
+                              "RNA")), levels = c("RNA", "RNA+Metadata","Metadata"))
+os.cix$what <- factor(os.cix$what, levels = rev(c("WHO classification", "ELN22 risk", "Age", "Age+Factor_1","Age+LSC17","C.best.factor","C.best.other","C.lasso.factors")))
+ylab <- c("C.best.factor" = "Best GRP (GRP1)", "Age+Factor_1" = "Age+GRP1", "C.lasso.factors" = "Full transcriptome (ML)")
+
+fig4b <- ggplot(aes(x = cix, y =what, color = class),data=subset(os.cix, what %in% c("C.best.factor","Age","ELN22 risk","WHO classification", "Age+LSC17","Age+Factor_1", "C.lasso.factors"))) + geom_point() + 
+  geom_errorbarh(aes(xmin= cix-cix.sd, xmax = cix+cix.sd), height=0.1) + 
+  scale_x_continuous(name = "C-index in 10-fold CV", limits = c(0.5,NA), breaks = seq(0.5,0.7,by=0.1)) + 
+  geom_vline(aes(xintercept = cix, color = class), data = subset(os.cix, what == "Age"), linetype=3)+
+  scale_y_discrete(labels = ylab) + 
+  scale_color_manual(values = c("Metadata" = "black", "RNA" = "darkblue", "RNA+Metadata" = "orange"),, name = "Predictor\ntype")+
+  theme_bw(base_size=14) + theme(panel.grid = element_blank(),axis.title.y = element_blank())
+
+print(fig4b)
+```
+### Figure 4C
+
+```{r figure4c, fig.width=4.5, fig.height=2}
+
+meta$age_discrete <- factor(ifelse(meta$Age <= quantile(meta$Age, 1/3), "young", "old"), levels = c("young", "old"))
+meta$f20discrete <- infotheo::discretize(result@result["Factor_1",] * factor_annotation$multiply_with[factor_annotation$factor_id == "Factor_1"], nbins = 3)$X
+
+
+fit <- survfit(Surv(OS_days/365, OS_status) ~ f20discrete + age_discrete, data = meta)
+   
+os_cox <- ggsurvplot_facet(fit, data = meta, facet.by = "age_discrete", ggtheme = theme_minimal(), ylab = "Overall survival",xlab = "Time (years)", palette = "Set1") + theme_bw() + theme(panel.grid.minor =  element_blank())
+  
+   print(os_cox)
+```
+
+### Figure 4D
+
+```{r, fig.width=4.5, fig.height=2}
+by.who.and.tertile <- ddply(meta, c("age_discrete","WHO_25", "f20discrete"), summarise, n = length(age_discrete), surv = sum(OS_status == 0 & OS_days > 365*3) / sum((OS_status == 1 & OS_days < 365*3)|(OS_status == 0 & OS_days > 365*3)))
+by.who.and.age <- ddply(meta, c("age_discrete","WHO_25"), summarise, total= length(age_discrete))
+by.who.and.tertile <- merge(by.who.and.tertile, by.who.and.age)
+by.who.and.tertile$fraction <- with(by.who.and.tertile, n/total)
+genoplot2 <- ggplot(aes(x = f20discrete, y = WHO_25, color = 100*surv, size=n),data = by.who.and.tertile) + geom_point() + facet_wrap(~age_discrete) + theme_bw() + theme(panel.grid = element_blank()) + scale_color_viridis_c(name = "% alive after\n5 years") + scale_size_area(name = "Number") + ylab("WHO25 classification") + scale_x_continuous(breaks =1:3, name = "GRP1 (Tertile)") + coord_cartesian(xlim = c(0.8,3.2))
+
+print(genoplot2)
+
+
+```
+

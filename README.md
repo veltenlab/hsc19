@@ -1,3 +1,7 @@
-Package to decompose HSC gene expression data into 18 gene regulatory programs.
+Package to decompose HSC gene expression data into 19 gene regulatory programs.
 
-I did not add functionality to easily switch between different GSFA runs. To switch: Run the code from `dataPreparation/prepare_data.R´. Awkwardly, the `R/associate.R` function has it hardcoded what factors to work with (3:20).
+Install with `devtools::build_github("veltenlab/hsc18", build_vignettes=T)` . Building vignettes will take approx. 10 minutes.
+
+For usage info and to reproduce figures 3&4 from Bowness et al., 2026, see package vignettes.
+
+Information on how to process Perturb-Seq data, adapt the package to new datasets, and scripts to reproduce figure 1&2 will be added.

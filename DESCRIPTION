@@ -1,15 +1,20 @@
-Package: hsc18
+Package: hsc19
 Type: Package
-Title: 18 gene regulatory programs in HSCs
+Title: 19 gene regulatory programs in HSCs
 Version: 0.1.0
 Authors@R: c(
     person(
       "Lars", "Velten",
       email = "lars.velten@crg.eu",
       role = c("aut", "cre")
+    ),
+    person(
+    "Joseph", "Bowness",
+    email = "joseph.bowness@crg.eu",
+    role = "aut"
     )
   )
-Description: Decomposes RNA-seq data into 18 gene regulatory programs defined by Bowness et al., 2026.
+Description: Decomposes RNA-seq data into 19 gene regulatory programs defined by Bowness et al., 2026.
 License: GPLv3
 Encoding: UTF-8
 LazyData: true
@@ -28,6 +33,8 @@ Suggests:
   org.Mm.eg.db,
   knitr,
   survminer,
-  infotheo
+  infotheo,
+  ggnewscale,
+  ggrepel
 RoxygenNote: 7.3.2
 VignetteBuilder: knitr

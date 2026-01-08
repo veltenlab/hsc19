@@ -1,0 +1,175 @@
+---
+title: "Decomposition of human ageing"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{1. Basic package usage: Human Ageing (Figure 3B,C)}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup, warning=F, message=F}
+library(hsc19)
+library(Seurat)
+library(ggplot2)
+```
+
+## Summary
+
+This vignette decomposes HSC transcriptomes from [a large scale resource on human ageing](https://www.nature.com/articles/s41591-025-03716-5) into nineteen gene regulatory programs. It demonstrates the basic use of the `decompose` and `associate` functions, and reproduces figures 3B and C from the manuscript.
+
+## Data preparation
+
+Step 1 (not run): Download data from [CellXGene](https://cellxgene.cziscience.com/collections/5542eeb0-96ef-4ab9-95ea-eb6abc178461)
+
+```{bash download, eval=F}
+wget -O furer_ultima.h5ad https://datasets.cellxgene.cziscience.com/fd9e6b84-4687-44cb-a61e-1b261c05c414.h5ad
+wget -O furer_illumina.h5ad https://datasets.cellxgene.cziscience.com/00414a7b-5aba-4c51-ad1e-d6caa6b1ebf3.h5ad
+```
+
+Step 2 (not run): Create patient-level pseudobulks of HSCs - shown for ultima data
+
+```{python pseudobulk, eval=F}
+
+import scanpy as sc
+import numpy as np
+from scipy import sparse
+import pandas as pd
+ad = sc.read("furer_ultima.h5ad")
+hsc_normal = ad[(ad.obs["cell state"] == "HSC_MPP") & (ad.obs["disease"] == "normal")]
+
+
+# Extract donor IDs
+donor_ids = ad.obs["donor_id"].values
+
+# Get unique donors
+unique_donors = np.unique(donor_ids)
+
+# Create pseudobulks
+pseudobulk_list = []
+
+for donor in unique_donors:
+    print(donor + "\n")
+    # Select cells for this donor
+    donor_mask = donor_ids == donor
+    donor_counts = ad[donor_mask].X
+    # Sum counts across cells
+    if sparse.issparse(donor_counts):
+        summed_counts = np.array(donor_counts.sum(axis=0)).flatten()
+    else:
+        summed_counts = donor_counts.sum(axis=0)
+    pseudobulk_list.append(summed_counts)
+    
+pseudobulk_matrix = pd.DataFrame(
+    np.vstack(pseudobulk_list),
+    index=unique_donors,
+    columns=ad.var_names
+)
+
+pseudobulk_matrix.transpose().to_csv("Furer_et_al_ultima_pseudobulks.csv.gz", compression='gzip')
+```
+
+Step 3: Load pseudobulks in R, create Seurat object
+
+```{r prepareSeurat, eval=T}
+illumina_pseudobulks <- read.csv("data_ageing/Furer_et_al_illumina_pseudobulks.csv.gz", row.names = 1)
+ultima_pseudobulks <- read.csv("data_ageing/Furer_et_al_ultima_pseudobulks.csv.gz", row.names = 1)
+common <- intersect(rownames(illumina_pseudobulks), rownames(ultima_pseudobulks))
+union_id <- union(colnames(illumina_pseudobulks), colnames(ultima_pseudobulks))
+combined_pseudobulks <- matrix(0,nrow = length(common), ncol = length(union_id), dimnames = list(common, union_id))
+for (i in colnames(illumina_pseudobulks)) combined_pseudobulks[,i] <- illumina_pseudobulks[common, i]
+for (i in colnames(ultima_pseudobulks)[!colnames(ultima_pseudobulks) %in% colnames(illumina_pseudobulks)]) combined_pseudobulks[,i] <- combined_pseudobulks[,i] + ultima_pseudobulks[common, i]
+
+metadata <- read.csv("data_ageing/patient_level_metadata.csv")
+rownames(metadata) <- paste0("WIS_blood_aging_", metadata$Individual.ID)
+metadata_use<- metadata[colnames(combined_pseudobulks),]
+S <- CreateSeuratObject(counts = combined_pseudobulks, names.field = 4, meta.data = metadata_use)
+S <- NormalizeData(S, normalization.method = "LogNormalize", scale.factor = 10000)
+S <- subset(S, cells = rownames(metadata))
+S <- FindVariableFeatures(S, verbose=F)
+S <- ScaleData(S, verbose=F)
+S <- RunPCA(S, verbose=F)
+metadata_final <- metadata[colnames(S),]
+
+```
+
+## Decompose data into GRPs
+
+```{r decompose}
+result <- decompose(s = S)
+```
+
+## Compute p-values: Association of GRPs with age (Figure S4A)
+
+The `associate` function, in its basic use, computes p-value associations.
+
+```{r pvalues, fig.width=5.5, fig.height=2.5}
+pvalues <- associate_numeric_outcome(result, metadata_final, "age", run.ML = F)$p.values
+
+pvalues$show_value <- with(pvalues, ifelse(p_outcome < 0.05, -log10(p_outcome), -log10(0.05)))
+pvalues$factor_id <- factor(pvalues$factor_id, levels = sprintf("Factor_%d",USEGRPS))
+ylabels <- gsub("Factor_", "", factor_annotation$factor_id); names(ylabels) <- factor_annotation$factor_id
+any_sig <- sapply(names(ylabels), function(x) any(pvalues$p_outcome[pvalues$factor_id == x] < 0.06))
+ylabels[!any_sig] <- ""
+pvalues <- merge(pvalues, factor_annotation)
+
+pvalues$xval <- with(pvalues, show_value * sign_outcome * multiply_with)
+ylab <- sprintf("%s: %s", gsub("Factor_", "GRP", factor_annotation$factor_id), factor_annotation$factor_label); names(ylab) <- factor_annotation$factor_id
+
+a <- qplot(x =  xval, y = reorder(factor_id,xval), color = as.factor(sign_outcome* multiply_with), data = subset(pvalues, p_outcome < 0.05)) +
+  xlab("Association with age:\n-log10 p-value (signed)") + scale_y_discrete(labels = ylab, name = "GRP") + theme_bw(base_size = 14) + theme(panel.grid = element_blank()) + scale_color_manual(values = c("-1" = "darkblue", "1"= "darkred"), guide =F)
+ print(a)
+```
+
+## Display correlation of GRP3 and Ageing (Figure 3B)
+
+```{r simpleplot, fig.width=2.5, fig.height=2.5}
+b <- qplot(result@result[ "Factor_3", ], metadata_final$age) +theme_bw(base_size = 14) + theme(panel.grid = element_blank()) + xlab("Factor 3") + ylab("Age")
+print(b)
+```
+
+## Construct a GRP based ageing clock (Figure 3C)
+
+First, run 10-fold CV with the factors to predict age
+
+```{r grpclock}
+factors <- rownames(result@result)[-1]
+sets <- rep(1:10, length.out = ncol(S))
+sh <- sample(1:ncol(S))
+features <- t(result@result)[sh,-1]
+response <- metadata_final[colnames(result), "age"][sh]
+predicted.linear <- rep(NA, ncol(S)) 
+
+for (i in 1:10) {
+  train <- features[sets != i, ]
+  test <- features[sets == i,]
+  linear <- lm(response ~ . , data = data.frame(response = response[sets!=i], train))
+  predicted.linear[sets == i] <- predict(linear, newdata = as.data.frame(test))
+}
+```
+
+Then, run several machine learning strategies to predict age from all available transcriptomic variables
+
+```{r associateML}
+ml <- associate_numeric_outcome(result, metadata_final, "age", other.predictors = NULL, run.ML = T, replicates = 10, cores = 10, genelists = NULL)
+```
+
+Finally, plot
+
+```{r plotClock, fig.width=3.5,fig.height=2.5}
+r2s <- data.frame(
+  what = factor(c("GRP 3", "All GRPs", "Full transcriptome"),levels = c("GRP 3", "All GRPs", "Full transcriptome")),
+  R2 = c(cor(result@result[ "Factor_3", ], metadata_final$age)^2,cor(predicted.linear, response)^2, max(ml$r.squares, na.rm=T) )
+)
+
+d <- ggplot(aes(x = what, y = R2), data = r2s) + geom_col() + coord_flip()  +theme_bw(base_size = 14) + theme(panel.grid = element_blank()) + xlab("Predictor") + ylab("R2 in 10-fold CV")
+print(d)
+
+```
+

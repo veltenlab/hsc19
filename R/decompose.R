@@ -55,10 +55,10 @@ decompose <- function(counts = NULL, s = NULL) {
   out@pve <- pve_numer / pve_denom
   if (ncol(s) > 50) out@pca <- s@reductions$pca
   out@s <- s
-  out@pve_pca <- cumsum(pca$sdev^2 / sum(pca$sdev^2))[18]
+  out@pve_pca <- cumsum(pca$sdev^2 / sum(pca$sdev^2))[19]
   out@usegenes <- usegenes
 
-  cat(sprintf("Run on %d samples. On the overlapping gene set of %d genes, 18 GRPs explain %.1f %% of the gene expression variance in your data. For comparison, 18 principal components explain %.1f %%\n",
+  cat(sprintf("Run on %d samples. On the overlapping gene set of %d genes, 19 GRPs explain %.1f %% of the gene expression variance in your data. For comparison, 19 principal components explain %.1f %%\n",
               ncol(resmat), length(out@usegenes), 100* out@pve, 100* out@pve_pca))
 
   return(out)
