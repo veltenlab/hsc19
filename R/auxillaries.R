@@ -7,7 +7,7 @@
 #'@export
 get_genes <- function(factor, top = T, values = F) {
 
-  a <- hsc18_loadings[,factor] * factor_annotation$multiply_with[factor_annotation$factor_id == factor]
+  a <- hsc19_loadings[,factor] * factor_annotation$multiply_with[factor_annotation$factor_id == factor]
   if (factor_annotation$multiply_with[factor_annotation$factor_id == factor] == -1) {
     cat("For purpose of display, loadings were multiplied with -1\n")
   }
@@ -29,7 +29,7 @@ get_genes <- function(factor, top = T, values = F) {
 #'@return Character vector of gene symbols, sorted by absolute value of the loading, or named numeric vector
 #'@export
 get_pert <- function(factor, top = T, values = F) {
-a <- hsc18_perturbation_beta[,factor] * factor_annotation$multiply_with[factor_annotation$factor_id == factor]
+a <- hsc19_perturbation_beta[,factor] * factor_annotation$multiply_with[factor_annotation$factor_id == factor]
 if (factor_annotation$multiply_with[factor_annotation$factor_id == factor] == -1) {
   cat("For purpose of display, loadings were multiplied with -1\n")
 }
@@ -49,7 +49,7 @@ if (values) {
 #'@return ggplot2 object
 #'@export
 plot_pert <- function(factor, min.sig.gRNA = 2) {
-  beta_sparse_long <- reshape2::melt(hsc18_perturbation_beta, varnames = c("guide_id", "factor_id"), value.name = "sparse")
+  beta_sparse_long <- reshape2::melt(hsc19_perturbation_beta, varnames = c("guide_id", "factor_id"), value.name = "sparse")
   beta_sparse_long$guide_id <- gsub("-CRISPRi-sgRNA-", ".", beta_sparse_long$guide_id)
   beta_full_long <- reshape2::melt(beta_mat, varnames = c("guide_id", "factor_id"), value.name = "full")
   beta_full_long$guide_id <- gsub("-CRISPRi-sgRNA-", ".", beta_full_long$guide_id)

@@ -26,7 +26,7 @@ decompose <- function(counts = NULL, s = NULL) {
     rid <- "hsy"
   } else rid <- "msy"
 
-  use_W_mat <- hsc18_loadings
+  use_W_mat <- hsc19_loadings
   #convert gene ids
   use_W_mat <- convertIDs(use_W_mat, rid)
 
