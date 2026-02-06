@@ -103,7 +103,7 @@ Here we multiply the effect of the gene KOs on the GRPs (beta matrix from GSFA, 
 
 david <- read.csv("data_Lara_et_al/david_tableS3.csv", header=T)[,1:6]
 lsk_screen <- subset(david, Population.2 == "LSKd9" & Population.1 == "cKit")
-our_genes_subset <- unique(gsub("-.+", "", rownames(hsc18_perturbation_beta)))
+our_genes_subset <- unique(gsub("-.+", "", rownames(hsc19_perturbation_beta)))
 
 #make a matrix: Mean of significant guides for each gene
 beta_sparse_long <- melt(beta_mat_sparse, varnames = c("guide_id", "factor_id"), value.name = "sparse")

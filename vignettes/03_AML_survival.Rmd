@@ -38,6 +38,8 @@ meta <- readRDS("data_AML/metadata.rds") #contains AML-specific transcriptime de
 prog_objc_v1 <- readRDS("data_AML/pseudobulks.rds") #is already a seurat object
 outcomes <- readRDS("data_AML/outcomes.rds")
 
+prog_objc_v1$RhapsodyID[prog_objc_v1$RhapsodyID == "1_2_7"] <- "1_2_7_x_2_3_4" #Make IDs consistent
+colnames(prog_objc_v1)[colnames(prog_objc_v1) == "1_2_7"] <-  "1_2_7_x_2_3_4"
 #compute module scores for gene signatures from Rodriguez-Fraticelli    
 alejo_human <- lapply(alejo_lists, toupper)
 prog_objc_v1 <- AddModuleScore(prog_objc_v1, features = alejo_human, name = "alejo", slot = "data")
