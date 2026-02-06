@@ -1,0 +1,2448 @@
+---
+title: "Inputs and plots for Fig 2 (GSFA)"
+author: "Joe Bowness"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+params:
+  rmd: "Fig2_GSFA"
+abstract: This records the preprocessing for GSFA, and then loading and plotting the results.
+output_dir: "/users/lvelten/jbowness/CRISPRi500/HSC/clean_analysis/manuscript/"
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+    code_folding: show
+    toc_depth: 4
+    toc_float:
+      collapsed: false
+    highlight: pygments
+editor_options:
+  chunk_output_type: console
+---
+## path to analysis
+
+```{r}
+#path_to_analysis <- "/users/lvelten/jbowness/CRISPRi500/HSC/clean_analysis/"
+path_to_analysis <- "~/cluster/jbowness/CRISPRi500/HSC/clean_analysis/"
+```
+
+
+## Required packages
+
+```{r, message=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+
+#load packages
+library(GSFA)
+library(readr)
+library(Seurat)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(patchwork)
+library(ggrepel)
+library(WebGestaltR)
+library(clusterProfiler)
+library(scales)
+library(stringr)
+library(gridExtra)
+library(enrichplot)
+library(plotly)
+library(ComplexHeatmap)
+
+#Lars' hsc18 package
+#library(hsc18)
+
+```
+
+# Get inputs for GSFA
+
+- See https://xinhe-lab.github.io/GSFA_paper/preprocess_and_gsfa_TCells.html#26_Inputs_for_GSFA
+- Make the input files from the PRTB assay (this format is in a similar form as a Z score..)
+- Subset only by consistent guides, which actually removes the non-targeting controls as well. For the PRTB assay maybe this is OK, because in theory each cell is already scaled compared to nearest NT controls.
+
+## Subset seurat object to only consistent perturbations
+
+```{r, eval=FALSE}
+# load seurat object
+CRISPRi500_HSC <- readRDS(paste0(path_to_analysis, "seurat_objects/CRISPRi500_HSC_WTx_prtb.RDS"))
+
+# subset seurat object to only consistent genes
+consistent_genes <- read_csv(paste0(path_to_analysis, "manuscript/int_files/SGS_gene_prtb_filt_pearson.csv"))
+consistent_guides <- read_csv(paste0(path_to_analysis, "manuscript/int_files/SGS_guide_prtb_filt_pearson.csv"))
+
+# make single target column
+CRISPRi500_HSC@meta.data$singletarget <- sub("-.*", "", CRISPRi500_HSC@meta.data$single_guides)
+CRISPRi500_HSC@meta.data$singletarget[grepl("NO|ONE", CRISPRi500_HSC@meta.data$singletarget)] <- "Non-targeting"
+
+# subset seurat object by consistent genes
+CRISPRi500_HSC_consistent <- subset(CRISPRi500_HSC, singletarget %in% consistent_genes$Gene)
+```
+
+## Extract the scaled PRTB matrix only from consistent perturbations
+
+```{r, eval=FALSE}
+scaled.gene_exp <- CRISPRi500_HSC_consistent@assays$prtb@scale.data
+cell_names <- colnames(CRISPRi500_HSC_consistent@assays$prtb@scale.data)
+gene_names <- rownames(CRISPRi500_HSC_consistent@assays$prtb@scale.data)
+colnames(scaled.gene_exp) <- cell_names
+rownames(scaled.gene_exp) <- gene_names
+scaled.gene_exp <- t(scaled.gene_exp)
+
+# save scaled PRTB matrix
+saveRDS(scaled.gene_exp, 
+        file = paste0(path_to_analysis,"manuscript/int_files/GSFA_inputs/CRISPRi500_HSC_consistent_prtb.rds"))
+```
+
+## Extract a Gmat from the CROP assay in seurat object
+
+- Binarise the CROP matrix with a UMI threshold of 2 (ie. 0 or 1 UMI counts -> 0, >2 UMI become -> 1)
+
+```{r, eval=FALSE}
+# get G matrix (binary of CROP matrix?)
+G_mat <- t(CRISPRi500_HSC_consistent@assays[["CROP"]]@counts)
+
+G_mat@x[G_mat@x == 1] <- 0
+G_mat@x[G_mat@x >= 2] <- 1
+G_mat <- as.matrix(G_mat)
+nonzero_cols <- Matrix::colSums(G_mat != 0) > 0
+G_mat <- G_mat[, nonzero_cols, drop = FALSE]
+
+# make matrix by gene instead guide, also collapse non-targeting guides
+gene_names <- sub("-CRISPRi-sgRNA-.*", "", colnames(G_mat))
+gene_names[grepl("ONE-INTERGENIC-sgRNA-|NO-SITE-sgRNA-", colnames(G_mat))] <- "Non-targeting"
+G_t <- t(G_mat)
+G_mat_by_gene <- rowsum(G_t, group = gene_names)
+G_mat_by_gene <- t((G_mat_by_gene > 0) * 1)
+rm(G_t)
+
+num_cells <- colSums(G_mat_by_gene)
+num_cells_df <- data.frame(locus = names(num_cells),
+                           count = num_cells)
+
+# by guide
+num_cells_guide <- colSums(G_mat)
+num_cells_guide_df <- data.frame(locus = names(num_cells_guide),
+                           count = num_cells_guide)
+
+# save G_mat (by guide and by gene)
+saveRDS(G_mat, 
+        file = paste0(path_to_analysis, "manuscript/int_files/GSFA_inputs/CRISPRi500_HSC_consistent_guide_Gmat.rds"))
+saveRDS(G_mat_by_gene, 
+        file = paste0(path_to_analysis, "manuscript/int_files/GSFA_inputs/CRISPRi500_HSC_consistent_gene_Gmat.rds"))
+
+# save data frames of cells pr guide/gene
+write.csv(num_cells_df, 
+          paste0(path_to_analysis, "manuscript/int_files/GSFA_inputs/CRISPRi500_HSC_consistent_gene_cells_per_gene.rds"), row.names = FALSE)
+write.csv(num_cells_guide_df, 
+          paste0(path_to_analysis, "manuscript/int_files/GSFA_inputs/CRISPRi500_HSC_consistent_cells_per_guide.rds"), row.names = FALSE)
+
+
+```
+
+# Now run GSFA with run_GSFA.R script (on cluster)
+
+# GSFA factors = GRPs
+
+## Load results from GSFA
+
+- We decided to use the output from GSFA using 21 factors. The rationale behind this is explained in GSFA_num_of_factors.Rmd ; basically a balance between interpretability and proportion variance explained (PVE) by the factors. 
+
+```{r}
+# G_mat
+G_mat_guide <- readRDS(
+  paste0(path_to_analysis, "manuscript/int_files/GSFA_inputs/CRISPRi500_HSC_consistent_guide_Gmat.rds"))
+
+perturbation_guide_names <- colnames(G_mat_guide)
+
+# ---- Load GSFA results with 21 factors ----
+fit21 <- readRDS(paste0(path_to_analysis, "manuscript/int_files/GSFA_outputs/fit_guide_consistent_21.rds"))
+gibbs_PM_21 <- fit21$posterior_means
+
+effect_mat_21 <- fit21$total_effect[, -ncol(fit21$total_effect)] # remove 'offset' column
+lfsr_mat_21 <- fit21$lfsr[, -ncol(fit21$lfsr)] # remove 'offset' column
+
+PIP_mat_21 <- gibbs_PM_21$F_pm 
+W_mat_21 <- gibbs_PM_21$W_pm 
+
+# Make W matrix sparse (PIP > 0.8)
+W_mat_21_sparse <- W_mat_21
+W_mat_21_sparse[PIP_mat_21 < 0.8] <- 0 
+
+```
+
+## Functions for exploring factors
+
+```{r}
+# swap signs function
+flip_W_by_majority_sign <- function(W, ties = c("keep", "flip")) {
+  ties <- match.arg(ties)
+  K <- ncol(W)
+  fac_names <- colnames(W)
+  if (is.null(fac_names)) fac_names <- paste0("Factor_", seq_len(K))
+
+  multiply_by <- rep(1L, K)
+
+  if (inherits(W, "dgCMatrix")) {
+    # sparse path
+    W_out <- W
+    p <- W@p
+    for (j in seq_len(K)) {
+      idx <- if (p[j] < p[j + 1]) (p[j] + 1L):p[j + 1L] else integer(0)
+      v <- if (length(idx)) W@x[idx] else numeric(0)
+      n_pos <- sum(v > 0, na.rm = TRUE)
+      n_neg <- sum(v < 0, na.rm = TRUE)
+      if (n_neg > n_pos || (n_neg == n_pos && ties == "flip")) {
+        multiply_by[j] <- -1L
+        if (length(idx)) W_out@x[idx] <- -W_out@x[idx]
+      }
+    }
+    colnames(W_out) <- fac_names
+  } else {
+    # dense path
+    M <- as.matrix(W)
+    for (j in seq_len(K)) {
+      v <- M[, j]
+      n_pos <- sum(v > 0, na.rm = TRUE)
+      n_neg <- sum(v < 0, na.rm = TRUE)
+      if (n_neg > n_pos || (n_neg == n_pos && ties == "flip")) {
+        multiply_by[j] <- -1L
+        M[, j] <- -M[, j]
+      }
+    }
+    colnames(M) <- fac_names
+    W_out <- M
+  }
+
+  tbl <- data.frame(factor_id = fac_names, multiply_with = multiply_by, row.names = NULL)
+  print(tbl)
+
+  invisible(list(W_flipped = W_out, multiply_table = tbl))
+}
+# plot heatmap function
+plot_W_heatmap <- function(W,
+                               remove_factors = c(1, 2),
+                               low = "blue", mid = "white", high = "red",
+                               base_size = 10) {
+  
+  # Coerce to sparse genes × factors
+  W <- Matrix::Matrix(as.matrix(W), sparse = TRUE)
+
+  K <- ncol(W)
+  keep_cols <- setdiff(seq_len(K), intersect(remove_factors, seq_len(K)))
+
+  # Subset to kept factors
+  Wk <- W[, keep_cols, drop = FALSE]
+
+  # Keep only genes with any nonzero loading
+  use <- Matrix::rowSums(Wk != 0) > 0
+  if (!any(use)) stop("No genes with non-zero loadings after filtering.")
+  Wk <- Wk[use, , drop = FALSE]
+
+  # Dense for ordering/plotting
+  Wd <- as.matrix(Wk)
+  
+  # For each gene: factor of max |loading| and its value
+  gene2fac <- max.col(abs(Wd), ties.method = "first")
+  gene_val <- Wd[cbind(seq_len(nrow(Wd)), gene2fac)]
+
+  # abs_desc ordering within each factor
+  gene_order <- order(gene2fac, -gene_val)
+  gene_levels <- rownames(Wd)[gene_order]
+
+  # Long format
+  df_long <- Wd |>
+    as.data.frame() |>
+    tibble::rownames_to_column("gene") |>
+    tidyr::pivot_longer(cols = -gene, names_to = "factor_id", values_to = "value")
+
+  # Axes ordering (top row shows highest-index factor)
+  df_long$factor_id <- factor(df_long$factor_id, levels = rev(colnames(Wd)))
+  df_long$gene      <- factor(df_long$gene,      levels = gene_levels)
+
+  # Plot
+  ggplot2::ggplot(df_long, ggplot2::aes(x = gene, y = factor_id, fill = value)) +
+    ggplot2::geom_tile() +
+    ggplot2::scale_fill_gradient2(low = low, mid = mid, high = high, name = "Loading") +
+    ggplot2::theme_minimal(base_size = base_size) +
+    ggplot2::theme(
+      axis.text.x = ggplot2::element_blank(),
+      axis.ticks.x = ggplot2::element_blank(),
+      panel.grid   = ggplot2::element_blank()
+    ) +
+    ggplot2::xlab(sprintf("Genes (n=%d)", nrow(Wd))) +
+    ggplot2::ylab("Factor")
+}
+
+# compare two heatmaps function
+plot_W_compare_heatmaps <- function(W1, W2,
+                                    remove_factors = c(1, 2),
+                                    matrix_names = c("W1", "W2"),
+                                    low = "blue", mid = "#EEEEEE", high = "red",
+                                    base_size = 10) {
+  stopifnot(length(matrix_names) == 2)
+  stopifnot(requireNamespace("Matrix", quietly = TRUE),
+            requireNamespace("tibble", quietly = TRUE),
+            requireNamespace("tidyr", quietly = TRUE),
+            requireNamespace("ggplot2", quietly = TRUE),
+            requireNamespace("patchwork", quietly = TRUE))
+
+  as_sparse <- function(W) {
+    W <- Matrix::Matrix(as.matrix(W), sparse = TRUE)
+    if (is.null(rownames(W))) rownames(W) <- paste0("gene_", seq_len(nrow(W)))
+    if (is.null(colnames(W))) colnames(W) <- paste0("Factor_", seq_len(ncol(W)))
+    W
+  }
+  drop_factors <- function(W, rm_idx) {
+    keep <- setdiff(seq_len(ncol(W)), intersect(rm_idx, seq_len(ncol(W))))
+    W[, keep, drop = FALSE]
+  }
+  # align to a fixed gene order by writing into a preallocated zero sparse matrix
+  align_genes <- function(W, genes) {
+    Z <- Matrix::Matrix(0, nrow = length(genes), ncol = ncol(W), sparse = TRUE,
+                        dimnames = list(genes, colnames(W)))
+    idx <- match(rownames(W), genes)
+    Z[idx, ] <- W
+    Z
+  }
+  to_long <- function(M, tag) {
+    df <- as.data.frame(as.matrix(M))
+    df <- tibble::rownames_to_column(df, "gene")
+    df <- tidyr::pivot_longer(df, -gene, names_to = "factor_id", values_to = "value")
+    df$factor_id <- paste0(df$factor_id, " (", tag, ")")
+    df
+  }
+
+  # Prep & filter
+  W1 <- drop_factors(as_sparse(W1), remove_factors)
+  W2 <- drop_factors(as_sparse(W2), remove_factors)
+  use1 <- Matrix::rowSums(W1 != 0) > 0
+  use2 <- Matrix::rowSums(W2 != 0) > 0
+  if (!any(use1) && !any(use2)) stop("No non-zero genes after removing factors.")
+
+  if (any(use1)) W1 <- W1[use1, , drop = FALSE]
+  if (any(use2)) W2 <- W2[use2, , drop = FALSE]
+
+  # Order genes in W1: group by factor of max |loading|, then DESC by signed loading
+  W1d <- as.matrix(W1)
+  g2f1 <- max.col(abs(W1d), ties.method = "first")
+  val1 <- W1d[cbind(seq_len(nrow(W1d)), g2f1)]
+  genes_W1_ordered <- rownames(W1d)[order(g2f1, -val1)]
+
+  # Genes only in W2 (not in W1 after filtering)
+  genes_W2_only <- setdiff(rownames(W2), rownames(W1))
+  if (length(genes_W2_only)) {
+    W2_sub <- as.matrix(W2[genes_W2_only, , drop = FALSE])
+    g2f2 <- max.col(abs(W2_sub), ties.method = "first")
+    val2 <- W2_sub[cbind(seq_len(nrow(W2_sub)), g2f2)]
+    genes_W2_only_ordered <- genes_W2_only[order(g2f2, -val2)]
+  } else {
+    genes_W2_only_ordered <- character(0)
+  }
+
+  # Final x-axis order: all W1 genes first, then W2-only genes
+  gene_levels <- c(genes_W1_ordered, genes_W2_only_ordered)
+
+  # Align both matrices to this x-axis (zeros for missing genes)
+  W1a <- align_genes(W1, gene_levels)
+  W2a <- align_genes(W2, gene_levels)
+
+  # Long data for plotting
+  df1 <- to_long(W1a, matrix_names[1])
+  df2 <- to_long(W2a, matrix_names[2])
+
+  # Y axis levels (top-to-bottom = higher factor index to lower)
+  lev1 <- rev(paste0(colnames(W1a), " (", matrix_names[1], ")"))
+  lev2 <- rev(paste0(colnames(W2a), " (", matrix_names[2], ")"))
+  df1$factor_id <- factor(df1$factor_id, levels = lev1)
+  df2$factor_id <- factor(df2$factor_id, levels = lev2)
+
+  # X axis order fixed by gene_levels from W1, then W2-only
+  df1$gene <- factor(df1$gene, levels = gene_levels)
+  df2$gene <- factor(df2$gene, levels = gene_levels)
+
+  # Plots
+  p_top <- ggplot2::ggplot(df1, ggplot2::aes(gene, factor_id, fill = value)) +
+    ggplot2::geom_tile() +
+    ggplot2::scale_fill_gradient2(low = low, mid = mid, high = high, name = "Loading") +
+    ggplot2::theme_minimal(base_size = base_size) +
+    ggplot2::theme(axis.text.x = ggplot2::element_blank(),
+                   axis.ticks.x = ggplot2::element_blank(),
+                   panel.grid  = ggplot2::element_blank()) +
+    ggplot2::labs(x = sprintf("Genes (union, n=%d)", length(gene_levels)),
+                  y = NULL, title = matrix_names[1])
+
+  p_bot <- ggplot2::ggplot(df2, ggplot2::aes(gene, factor_id, fill = value)) +
+    ggplot2::geom_tile() +
+    ggplot2::scale_fill_gradient2(low = low, mid = mid, high = high, name = "Loading") +
+    ggplot2::theme_minimal(base_size = base_size) +
+    ggplot2::theme(axis.text.x = ggplot2::element_blank(),
+                   axis.ticks.x = ggplot2::element_blank(),
+                   panel.grid  = ggplot2::element_blank()) +
+    ggplot2::labs(x = NULL, y = NULL, title = matrix_names[2])
+
+  ((p_top / p_bot) +
+     patchwork::plot_layout(guides = "collect")) &
+    ggplot2::theme(legend.position = "right")
+}
+
+# plot pairwise correlation between factors function (taken from GSFA_paper GitHub)
+plot_pairwise.corr_heatmap_reorder <- function(input_mat_1, input_mat_2 = NULL,
+                                       name_1 = NULL, name_2 = NULL,
+                                       corr_type = c("pearson", "jaccard", "prop_overlap"),
+                                       return_corr = FALSE,
+                                       label_size = 8,
+                                       color_vec = NULL,
+                                       reorder_diag = c("none","closest_to_1","closest_to_-1","absmax")){
+  # Please store samples in the columns of 'input_mat'.
+  reorder_diag <- match.arg(reorder_diag)
+  if (is.null(input_mat_2)){
+    input_mat_2 <- input_mat_1
+  }
+  if (is.null(name_2)){
+    name_2 <- name_1
+  }
+  stopifnot(nrow(input_mat_1) == nrow(input_mat_2))
+  corr_mat <- matrix(nrow = ncol(input_mat_1), ncol = ncol(input_mat_2))
+  
+  for (i in 1:ncol(input_mat_1)){
+    for (j in 1:ncol(input_mat_2)){
+      vec_1 <- input_mat_1[, i]
+      vec_2 <- input_mat_2[, j]
+      if (corr_type == "pearson"){
+        corr_mat[i, j] <- cor(vec_1, vec_2, method = "pearson")
+      } else if (corr_type == "jaccard"){
+        corr_mat[i, j] <- sum(vec_1 * vec_2) / sum((vec_1 + vec_2) > 0)
+      } else {
+        corr_mat[i, j] <- sum(vec_1 * vec_2) / sum(vec_1)
+      }
+    }
+  }
+  
+  if (is.null(colnames(input_mat_1))){
+    rownames(corr_mat) <- 1:ncol(input_mat_1)
+  } else {
+    rownames(corr_mat) <- colnames(input_mat_1)
+  }
+  if (is.null(colnames(input_mat_2))){
+    colnames(corr_mat) <- 1:ncol(input_mat_2)
+  } else {
+    colnames(corr_mat) <- colnames(input_mat_2)
+  }
+  
+  # --------- NEW: optimal reordering that KEEPS RECTANGULAR SHAPE ---------
+  if (reorder_diag != "none"){
+    M <- corr_mat
+    # Build a cost matrix for LSAP (minimization)
+    if (reorder_diag == "closest_to_1") {
+      cost <- 1 - M
+    } else if (reorder_diag == "closest_to_-1") {
+      cost <- 1 + M
+    } else { # "absmax"
+      cost <- 1 - abs(M)
+    }
+    n1 <- nrow(cost); n2 <- ncol(cost)
+    
+    # Pad to square only for solving the assignment
+    k <- max(n1, n2)
+    pad_val <- max(cost, na.rm = TRUE) + 1
+    cost_sq <- matrix(pad_val, nrow = k, ncol = k)
+    cost_sq[1:n1, 1:n2] <- cost
+    
+    get_assignment <- function(cost_matrix){
+      if (requireNamespace("clue", quietly = TRUE)) {
+        as.integer(clue::solve_LSAP(cost_matrix))
+      } else {
+        # Greedy fallback if 'clue' is not installed
+        warning("Package 'clue' not installed; using greedy matching.")
+        assign <- integer(nrow(cost_matrix))
+        remaining <- seq_len(ncol(cost_matrix))
+        for (i in seq_len(nrow(cost_matrix))) {
+          j_idx <- remaining[ which.min(cost_matrix[i, remaining]) ]
+          assign[i] <- j_idx
+          remaining <- setdiff(remaining, j_idx)
+          if (!length(remaining)) break
+        }
+        assign
+      }
+    }
+    
+    ass <- get_assignment(cost_sq)[seq_len(n1)]  # chosen column for each row (in padded square)
+    
+    if (n1 <= n2) {
+      # Reorder COLUMNS: put matched columns (in row order) first, then the rest
+      matched_cols <- ass[ass <= n2]
+      matched_cols <- unique(matched_cols)  # just in case
+      rest_cols <- setdiff(seq_len(n2), matched_cols)
+      new_col_order <- c(matched_cols, rest_cols)
+      corr_mat <- M[, new_col_order, drop = FALSE]
+      attr(corr_mat, "col_order") <- new_col_order
+    } else {
+      # Reorder ROWS: place rows by the column they were matched to, then append unmatched rows
+      matched_rows <- which(ass <= n2)
+      row_order_first <- matched_rows[order(ass[matched_rows])]
+      rest_rows <- setdiff(seq_len(n1), row_order_first)
+      new_row_order <- c(row_order_first, rest_rows)
+      corr_mat <- M[new_row_order, , drop = FALSE]
+      attr(corr_mat, "row_order") <- new_row_order
+    }
+  }
+  # ------------------------------------------------------------------------
+  
+  if (corr_type == "pearson"){
+    legend_name <- "Pearson Correlation"
+    if (is.null(color_vec)){
+      colormap <- circlize::colorRamp2(breaks = c(-1, 0, 1),
+                                       colors = c("blue", "white", "red"))
+    } else {
+      colormap <- circlize::colorRamp2(breaks = c(-1, 0, 1),
+                                       colors = color_vec)
+    }
+  }
+  if (corr_type == "jaccard" | corr_type == "prop_overlap"){
+    legend_name <- ifelse(corr_type == "jaccard",
+                          "Jaccard Index", "% of Shared Non-Zero Genes")
+    if (is.null(color_vec)){
+      colormap <- circlize::colorRamp2(breaks = c(0, 0.3, 1),
+                                       colors = c("black", "purple", "gold"))
+    } else {
+      colormap <- circlize::colorRamp2(breaks = c(0, 0.5, 1),
+                                       colors = color_vec)
+    }
+  }
+  
+  ht <- Heatmap(corr_mat,
+                col = colormap,
+                name = legend_name,
+                row_title = name_1, column_title = name_2,
+                cluster_rows = FALSE, cluster_columns = FALSE,
+                row_names_gp = gpar(fontsize = label_size),
+                column_names_gp = gpar(fontsize = label_size))
+  draw(ht)
+  if (return_corr){
+    return(corr_mat)
+  }
+}
+
+# get top and bottom genes for a given factor
+get_genes_for_factor <- function(factor_name, W, top = FALSE, eps = 0) {
+  stopifnot(factor_name %in% colnames(W))
+  a <- setNames(as.numeric(W[, factor_name]), rownames(W))  
+  if (top) a <- a[a >  eps] else a <- a[a < -eps]         
+  names(sort(a, decreasing = top))
+}
+
+# zoom in on particular factor in the heatmap
+zoom_factor_heatmap_W <- function(W,
+                                  target_factor,
+                                  genes_to_label = character(),
+                                  eps = 0,
+                                  reorder_by_strength = TRUE,
+                                  show_x_labels = FALSE) {
+  # deps
+  stopifnot(requireNamespace("ggplot2", quietly = TRUE),
+            requireNamespace("ggrepel", quietly = TRUE))
+  if (!inherits(W, "matrix") && !inherits(W, "dgCMatrix")) {
+    if (requireNamespace("Matrix", quietly = TRUE)) {
+      W <- Matrix::Matrix(as.matrix(W), sparse = TRUE)
+    } else {
+      W <- as.matrix(W)
+    }
+  }
+
+  # ensure names
+  if (is.null(rownames(W))) rownames(W) <- paste0("gene_", seq_len(nrow(W)))
+  if (is.null(colnames(W))) colnames(W) <- paste0("Factor_", seq_len(ncol(W)))
+
+  # resolve which factor to plot (accept numeric index or name like "Factor_3")
+  if (is.numeric(target_factor) && length(target_factor) == 1L) {
+    j <- as.integer(target_factor)
+  } else if (is.character(target_factor) && length(target_factor) == 1L) {
+    j <- match(target_factor, colnames(W))
+    if (is.na(j)) {
+      # try to parse trailing number if given "Factor_3" style
+      num <- suppressWarnings(as.integer(gsub("\\D", "", target_factor)))
+      if (!is.na(num)) j <- num
+    }
+  } else {
+    stop("`target_factor` must be a single numeric index or a single column name.")
+  }
+  if (is.na(j) || j < 1L || j > ncol(W)) stop("`target_factor` does not match any column of W.")
+
+  fac_label <- colnames(W)[j]
+  vals <- as.numeric(W[, j])
+  genes <- rownames(W)
+
+  # filter by |value| > eps
+  keep <- abs(vals) > eps
+  if (!any(keep)) stop(sprintf("No genes with |loading| > %g for %s.", eps, fac_label))
+
+  df <- data.frame(
+    gene      = genes[keep],
+    factor_id = fac_label,
+    value     = vals[keep],
+    stringsAsFactors = FALSE
+  )
+
+  # order genes (optional): DESC by signed loading (most positive → most negative)
+  if (isTRUE(reorder_by_strength)) {
+    df <- df[order(-df$value), , drop = FALSE]
+  }
+
+  # factor levels for axes
+  df$gene      <- factor(df$gene,      levels = df$gene)          # left→right as ordered above
+  df$factor_id <- factor(df$factor_id, levels = fac_label)        # single strip
+
+  # small display constants
+  aspect_ratio  <- 0.2 # was 0.12
+  label_nudge_y <- 2
+  y_expand_top  <- 1.2 # was 0.25
+  label_size    <- 2.8
+  repel_force   <- 2  # was 2
+  arrow_len_npc <- 0.05
+
+  p <- ggplot2::ggplot(df, ggplot2::aes(x = gene, y = factor_id, fill = value)) +
+    ggplot2::geom_tile(height = 0.9) +
+    ggplot2::scale_fill_gradient2(low = "blue", mid = "#EEEEEE", high = "red", name = "Loading") +
+    ggplot2::scale_y_discrete(expand = ggplot2::expansion(mult = c(0.05, y_expand_top))) +
+    ggplot2::theme_minimal(base_size = 10) +
+    ggplot2::theme(
+      panel.grid = ggplot2::element_blank(),
+      axis.title.y = ggplot2::element_text(),
+      axis.text.y  = ggplot2::element_blank(),
+      axis.ticks.y = ggplot2::element_blank(),
+      axis.text.x  = if (show_x_labels) ggplot2::element_text(angle = 90, vjust = 0.5, hjust = 1)
+                     else ggplot2::element_blank(),
+      axis.ticks.x = if (show_x_labels) ggplot2::element_line() else ggplot2::element_blank(),
+      plot.margin  = ggplot2::margin(t = 10, r = 8, b = 6, l = 8),
+      aspect.ratio = aspect_ratio
+    ) +
+    ggplot2::xlab(sprintf("Genes loaded to %s", fac_label)) +
+    ggplot2::ylab(fac_label) +
+    ggplot2::coord_cartesian(clip = "off")
+
+  # optional labels
+  if (length(genes_to_label)) {
+    lab_df <- df[df$gene %in% genes_to_label, , drop = FALSE]
+    if (nrow(lab_df)) {
+      p <- p + ggrepel::geom_text_repel(
+        data = lab_df,
+        ggplot2::aes(label = gene),
+        direction = "y",
+        nudge_y = label_nudge_y,
+        force = repel_force,
+        max.overlaps = Inf,
+        min.segment.length = 0,
+        segment.size = 0.3,
+        segment.alpha = 0.8,
+        arrow = ggplot2::arrow(length = grid::unit(arrow_len_npc, "npc")),
+        box.padding = 0.15,
+        point.padding = 0.15,
+        size = label_size,
+        seed = 9
+      )
+    }
+  }
+
+  p
+}
+
+# barplots of top enriched GO terms (from GSFA paper)
+barplot_top_enrich_terms <- function(enrich_df, fdr_cutoff = 0.05, FC_cutoff = 2,
+                                     size_cutoff = 20,
+                                     terms_of_interest = NULL,
+                                     top_num = 5,
+                                     str_wrap_length = 25,
+                                     FC_max = 8,
+                                     pval_max = 10){
+  enrich_df <- enrich_df %>%
+    filter(FDR < fdr_cutoff, enrichmentRatio >= FC_cutoff) %>%
+    filter(size >= size_cutoff) %>%
+    arrange(-enrichmentRatio)
+  if (is.null(terms_of_interest)){
+    top_terms_df <- enrich_df %>% slice(1:top_num)
+  } else {
+    top_terms_df <- enrich_df %>% filter(description %in% terms_of_interest)
+  }
+  top_terms_df$description_short <- str_wrap(top_terms_df$description, width = str_wrap_length)
+  top_terms_df$description_short <- factor(top_terms_df$description_short,
+                                           levels = top_terms_df$description_short)
+  top_terms_df$pValue[top_terms_df$pValue < 10^(-pval_max)] <- 10^(-pval_max)
+  top_terms_df$enrichmentRatio[top_terms_df$enrichmentRatio > FC_max] <- FC_max
+  plot_out <- ggplot(top_terms_df) +
+    geom_bar(aes(x = description_short, y = enrichmentRatio, fill = -log10(pValue)),
+             stat="identity") +
+    coord_flip() +
+    scale_y_continuous(limits = c(0, FC_max)) +
+    scale_fill_gradientn(limits = c(2, pval_max),
+                         colors = c("blue", "red"),
+                         breaks = seq(2, pval_max, 2)) +
+    theme(axis.title.y = element_blank(),
+          axis.text.y = element_text(size = 8))
+  return(plot_out)
+}
+
+```
+
+## Plot a heatmap of the factors
+
+```{r}
+# median genes loaded to each factor
+n_nonzero_by_col <- colSums(W_mat_21_sparse != 0 & !is.na(W_mat_21_sparse))
+median(n_nonzero_by_col)
+
+# initial heatmap
+initial_heatmp <- plot_W_heatmap(W_mat_21_sparse, remove_factors = NULL)
+res <- flip_W_by_majority_sign(W_mat_21_sparse) 
+
+# flip signs and generate multiply_with
+W_mat_21_sparse_flip <- res$W_flipped
+W_mat_21_mutliply_with <- res$multiply_table
+
+# add GRP name column
+factor_annotation_GRP21 <- W_mat_21_mutliply_with
+fact_num <- as.integer(sub("Factor_", "", factor_annotation_GRP21$factor_id))
+skip <- c(7, 10)
+grp_index <- cumsum(!fact_num %in% skip)
+grp_index[fact_num %in% skip] <- NA
+factor_annotation_GRP21$GRP <- ifelse(is.na(grp_index), NA, paste0("GRP", grp_index))
+
+#rename colnames in plot
+W_mat_21_sparse_flip_plot <- W_mat_21_sparse_flip
+colnames(W_mat_21_sparse_flip_plot) <-
+  gsub("^Factor_", "", colnames(W_mat_21_sparse_flip_plot))
+
+W_mat_heatmap_GSFA21 <- plot_W_heatmap(W_mat_21_sparse_flip_plot,
+                                       remove_factors = NULL)
+W_mat_heatmap_GSFA21
+```
+
+```{r, eval=FALSE}
+ggsave( filename = "manuscript/fig2/W_mat_heatmap_GSFA21.pdf",
+        plot     = W_mat_heatmap_GSFA21,
+        width    = 6.5,
+        height   = 5,
+        units    = "in"
+        )
+
+```
+
+## Get top and bottom gene lists for each factor
+
+```{r, eval=FALSE}
+# write gene lists from all factors to files
+for (i in 1:21) {
+  bottom <- get_genes_for_factor(sprintf("Factor_%d",i), W_mat_21_sparse_flip, top=F)
+  top <- get_genes_for_factor(sprintf("Factor_%d",i), W_mat_21_sparse_flip, top=T)
+  writeLines(bottom, 
+               sprintf(paste0(path_to_analysis, "manuscript/int_files/GSFA_factor_gene_lists/Factor_%d_bottom.txt",i)))
+  writeLines(top, 
+               sprintf(paste0(path_to_analysis, "manuscript/int_files/GSFA_factor_gene_lists/Factor_%d_top.txt",i)))
+}
+
+```
+
+## Plot representative genes for example factors
+
+```{r}
+# Factor 20 = biosynthesis
+top_Factor_20 <- get_genes_for_factor("Factor_20", W_mat_21_sparse_flip, top=T)
+top_Factor_20
+Factor20_biosynthesis <- zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_20",
+                                               genes_to_label = c("Actb", "Rps18", "Rps5", "Npm1", "Rpl4", "Rps3", "Rps26"), eps = 0.0)
+Factor20_biosynthesis
+
+# Factor 17 = LT-HSC  vs Lymphoid priming
+top_Factor_17 <- get_genes_for_factor("Factor_17", W_mat_21_sparse_flip, top=T)
+top_Factor_17
+bottom_Factor_17 <- get_genes_for_factor("Factor_17", W_mat_21_sparse_flip, top=F)
+bottom_Factor_17
+
+Factor17_LT_HSC <- zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_17",
+                                               genes_to_label = c("Mecom", "Meis1", "Pbx1", "Tek", "Plxdc2",
+                                                                  "Itga4", "Adgrg1","Erg","Tox","Flt3","Satb1","Ikzf1"), eps = 0.0)
+Factor17_LT_HSC
+
+# Factor 12 = NFkB signalling
+top_Factor_12 <- get_genes_for_factor("Factor_12", W_mat_21_sparse_flip, top=T)
+top_Factor_12
+bottom_Factor_12 <- get_genes_for_factor("Factor_12", W_mat_21_sparse_flip, top=F)
+bottom_Factor_12
+
+Factor12_NFkB <- zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_12",
+                                       genes_to_label = c("Nfkbia","Nfkb1","Rel","Tnip3","Tnip1","Tank"), eps = 0.0)
+Factor12_NFkB
+
+Factor12_NFkB_nolabel <- zoom_factor_heatmap_W(W_mat_21_sparse_flip, 
+                                               target_factor = "Factor_12",
+                                               genes_to_label = NULL, eps = 0.0)
+
+Factor17_LT_HSC_nolabel <- zoom_factor_heatmap_W(W_mat_21_sparse_flip, 
+                                                 target_factor = "Factor_17",
+                                                 genes_to_label = NULL, eps = 0.0)
+
+Factor20_biosynthesis_nolabel <- zoom_factor_heatmap_W(W_mat_21_sparse_flip, 
+                                                       target_factor = "Factor_20",
+                                                       genes_to_label = NULL, eps = 0.0)
+#Factor12_NFkB_nolabel
+#Factor17_LT_HSC_nolabel
+#Factor20_biosynthesis_nolabel
+
+```
+
+Save plots with labels:
+
+```{r, eval=FALSE}
+ggsave( filename = "manuscript/fig2/Factor12_NFkB_heatmap.pdf",
+        plot     = Factor12_NFkB,
+        width    = 8,
+        height   = 4,
+        units    = "in"
+        )
+ggsave( filename = "manuscript/fig2/Factor17_LT_HSC_heatmap.pdf",
+        plot     = Factor17_LT_HSC,
+        width    = 6,
+        height   = 4,
+        units    = "in"
+        )
+ggsave( filename = "manuscript/fig2/Factor20_biosynthesis_heatmap.pdf",
+        plot     = Factor20_biosynthesis,
+        width    = 8,
+        height   = 4,
+        units    = "in"
+        )
+```
+
+Save plots without labels:
+
+```{r, eval=FALSE}
+ggsave( filename = "manuscript/fig2/Factor12_NFkB_heatmap_nolabel.pdf",
+        plot     = Factor12_NFkB_nolabel,
+        width    = 6,
+        height   = 4,
+        units    = "in"
+        )
+ggsave( filename = "manuscript/fig2/Factor17_LT_HSC_heatmap_nolabel.pdf",
+        plot     = Factor17_LT_HSC_nolabel,
+        width    = 6,
+        height   = 4,
+        units    = "in"
+        )
+ggsave( filename = "manuscript/fig2/Factor20_biosynthesis_heatmap_nolabel.pdf",
+        plot     = Factor20_biosynthesis_nolabel,
+        width    = 6,
+        height   = 4,
+        units    = "in"
+        )
+```
+
+
+## Find & plot representative genes for all factors
+
+```{r, eval=FALSE}
+zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_1",
+                      genes_to_label = c("Mpo","Ccl9","Plac8","Sell","Selp","Itgb3",
+                                         "Grb10", "Clnk"), eps = 0.0)
+
+zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_2",
+                      genes_to_label = c("Adgrl4", "Dock1","Flt3","Cd34",
+                                         "Pcdh7"), eps = 0.0)
+
+zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_3",
+                      genes_to_label = c("Egr1", "Malat1", "Neat1", "Jun", "Fos","Nfkbiz"), eps = 0.0)
+
+zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_4",
+                      genes_to_label = c("Smim3", "Klf13","Egr1", "Jun","Spred2",
+                                         "Erg","Itga4","Lmo2","Myb", "Adgrg1"), eps = 0.0)
+
+# new "representative genes" from Lars
+zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_4",
+                      genes_to_label = c("Rock1", "Mapkapk2", "Jun", "Junb", "Spred2", "Rasgef1b",
+                                         "Kit", "Hlf", "Cd47", "Myb", "Itga4", "Lmo2"), eps = 0.0)
+
+zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_5",
+                      genes_to_label = c("Itga2b","Itgb3","Myh9","Flna","Fyb1","Actb",
+                                         "Cdk6","Mpo","Erg"), eps = 0.0)
+
+zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_6",
+                      genes_to_label = c("Pola1", "Rad51b",
+                                         "Mcm4","Mcm3","Mcm6",
+                                         "Smc2","Smc6","Top2a"), eps = 0.0)
+
+zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_8",
+                      genes_to_label = c("mt-Rnr1", "mt-Rnr2", "mt-Cytb", "mt-Nd1",
+                                         "Cmss1","Lars2"), eps = 0.0)
+
+zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_9",
+                      genes_to_label = c("Bcl11a", "Bach2", "Runx1", "Cbfa2t3","Plcg2",
+                                         "Hspa5", "Hsp90b1", "Sec24d", "Pdia3","Ern1"), eps = 0.0)
+
+zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_11",
+                      genes_to_label = c("Myc","Ccnd2","Eif4a1","Lars1","Eif4g1","Npm1","Eif2s2",
+                                         "Ikzf2"), eps = 0.0)
+
+zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_12",
+                      genes_to_label = c("Tnip1", "Nfkbia", "Tnip3", "Tank", "Tnfaip3", "Nfkb1", "Nfkbiz",
+                                         "Hmga2", "Bcl2", "Runx2"), eps = 0.0)
+
+zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_13",
+                      genes_to_label = c("Hmga2", "Hlf", "Cd53", "Msi2", "Runx2",
+                                         "Scin", "Aff3"), eps = 0.0)
+
+zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_14",
+                      genes_to_label = c("Kcnq5", "Immp2l", "Pard3b", "Elmo1", "Ncl", "Rad51b",
+                                         "Cbfa2t3", "Pim1", "Adgrg1"), eps = 0.0)
+
+# B-lymphoid priming gene signatures from Lars = less strong:
+zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_14",
+                      genes_to_label = c("Tcf4", "Foxp1", "Maml3", "Ikzf2", "Mef2c", "Zeb2"), eps = 0.0)
+
+zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_15",
+                      genes_to_label = c("Hexb", "Cdk8", "Mir6236", "Lars2", "Cmss1"),
+                      eps = 0.0)
+
+zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_16",
+                      genes_to_label = c("Fut8", "Wdfy4", "Ptprc", "Dock10",  "Plcg2", "Tespa1"), eps = 0.0)
+
+zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_17",
+                      genes_to_label = c("Plxdc2", "Mecom", "Meis1",
+                                         "Dach1", "Angpt1",
+                                         "Flt3", "Ikzf1", "Satb1", "Emb"), eps = 0.0)
+
+zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_18",
+                      genes_to_label = c("Cdk6", "Etv6","Msi2", "Mpo", "Myb","Kit","Erg"), eps = 0.0)
+
+# new from Lars:
+zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_18",
+                      genes_to_label = c("Mpo", "Myb", "Kit", "Flt3",
+                                         "Runx1", "Ikzf2", "Mecom", "Lmo2"), eps = 0.0)
+
+zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_19",
+                      genes_to_label = c("Plxdc2", "Lrp12", "Pcdh7", "Stox2",
+                                         "Mecom", "Igf1r", "Myb", "Egr1", "Kit"), eps = 0.0)
+
+zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_20",
+                      genes_to_label = c("Actb", "Rps18", "Rps5", "Npm1", 
+                                         "Rpl4", "Rps3", "Rps26"), eps = 0.0)
+
+zoom_factor_heatmap_W(W_mat_21_sparse_flip, target_factor = "Factor_21",
+                      genes_to_label = c("Mki67", "Kif15", "Kif11", 
+                                         "Top2a","Cenpe", "Cenpp", "Ncapg2","Ncapd2"),
+                      eps = 0.0)
+
+```
+
+## GO enrichment of factors
+
+- Some factors demonstrate clear GO enrichments for particular bioligical processes
+- Repeating for the "geneontology_Molecular_Function_noRedundant" database did not generate further insight (besides enrichment of 'rRNA binding' and 'structural constituent of ribosome' in Factor_20)
+
+```{r, message=FALSE, warning=FALSE}
+enrich_db <- "geneontology_Biological_Process_noRedundant"
+listIdType(organism = "mmusculus")
+all_genes <- rownames(gibbs_PM_21$F_pm)
+
+# GO enrichment for all factors, "top" lists ----
+enrich_res_top <- list()
+for (i in setdiff(1:21, c(7, 10))) {
+  # Factor_id
+  factor_id <- paste0("Factor_", i)
+  # Top genes (positively loaded to factor)
+  genes_to_test_top <- get_genes_for_factor(factor_id, W_mat_21_sparse_flip, top=T)
+  # Enrichment results
+  enrich_res_top[[factor_id]] <- WebGestaltR::WebGestaltR(enrichMethod = "ORA",
+                             organism = "mmusculus",
+                             enrichDatabase = enrich_db,
+                             interestGene = genes_to_test_top,
+                             interestGeneType = "genesymbol",
+                             referenceGene = all_genes,
+                             referenceGeneType = "genesymbol",
+                             isOutput = F)
+}
+
+# GO enrichment for any "bottom genes" ----
+enrich_res_bottom <- list()
+for (i in setdiff(1:21, c(7, 10, 15, 21))) {
+  # Factor_id
+  factor_id <- paste0("Factor_", i)
+  # Top genes (positively loaded to factor)
+  genes_to_test_bottom <- get_genes_for_factor(factor_id, W_mat_21_sparse_flip, top=F)
+  # Enrichment results
+  enrich_res_bottom[[factor_id]] <- WebGestaltR::WebGestaltR(enrichMethod = "ORA",
+                             organism = "mmusculus",
+                             enrichDatabase = enrich_db,
+                             interestGene = genes_to_test_bottom,
+                             interestGeneType = "genesymbol",
+                             referenceGene = all_genes,
+                             referenceGeneType = "genesymbol",
+                             isOutput = F)
+}
+
+# Plot some factors with obvious GO enrichments ----
+factor_indices <- c("Factor_6","Factor_11","Factor_12","Factor_21")
+plot_list <- list()
+for (factor_indx in factor_indices) {
+  
+  # top terms for factor
+  top_terms <- enrich_res_top[[factor_indx]]$description[1:5]
+  
+  # make bar plot
+  p <- barplot_top_enrich_terms(
+    enrich_res_top[[factor_indx]],
+    terms_of_interest = top_terms,
+    FC_cutoff = 1.5,
+    FC_max = 6.5,
+    str_wrap_length = 35
+  ) + labs(title = paste0("Factor ", factor_indx))
+  
+  # add to  list
+  plot_list[[length(plot_list) + 1]] <- p
+}
+
+# arrange and display
+align_plot_widths <- function(plot_list) {
+  grob_list <- lapply(plot_list, ggplotGrob)
+  
+  # compute the maximum width for each column across all grobs
+  maxWidth <- Reduce(grid::unit.pmax, lapply(grob_list, function(g) g$widths))
+  
+  # assign that maxWidth to each grob
+  grob_list <- lapply(grob_list, function(g) {
+    g$widths <- maxWidth
+    g
+  })
+  
+  grob_list
+}
+aligned_grobs <- align_plot_widths(plot_list)
+do.call(gridExtra::grid.arrange, c(aligned_grobs, ncol = 1))
+
+```
+
+# How perturbations affect GRPs
+
+## Functions for perturbation effects
+
+```{r}
+# ---- Function to turn Beta and Gamma matrices into df ----
+#' prep_effects
+#' 
+#' @param beta  numeric matrix (guides/perturbations x factors), row/colnames required
+#' @param gamma numeric matrix (same dimnames as beta) of posterior inclusion probabilities
+#' @param factor_annotation optional data.frame with columns: factor_id (must match colnames),
+#'        factor_label (descriptive name), multiply_with (numeric +/-1 to align signs)
+#' @param gamma_thresh PIP threshold used to flag significant entries (default 0.8)
+#' @param align_sign multiply beta by the multiply_with column in factor_annotation to ensure consistent directions of perturbation effects
+#' @param id_simplify whether to simplify names of IDs to replace id_pattern with id_replacement 
+#' @return data.frame in long/tidy form with columns: perturbation, factor_id, beta, gamma,
+#'         sig, factor_label, multiply_with, beta_aligned
+prep_effects <- function(beta, gamma, factor_annotation = NULL,
+                         gamma_thresh = 0.8, align_sign = TRUE,
+                         id_simplify = FALSE,
+                         id_pattern = "-CRISPRi-sgRNA-",
+                         id_replacement = ".",
+                         gene_regex = "-CRISPRi-sgRNA-[1-3]$") {
+  # Input checks ----
+  stopifnot(is.matrix(beta), is.matrix(gamma))
+  stopifnot(identical(rownames(beta), rownames(gamma)))
+  stopifnot(identical(colnames(beta), colnames(gamma)))
+
+  # Melt + merge ----
+  df_beta  <- reshape2::melt(beta, varnames = c("perturbation", "factor_id"), value.name = "beta")
+  df_gamma <- reshape2::melt(gamma, varnames = c("perturbation", "factor_id"), value.name = "gamma")
+  df <- merge(df_beta, df_gamma, by = c("perturbation", "factor_id"), all.x = TRUE)
+  df$gamma[is.na(df$gamma)] <- 0
+  df$sig <- df$gamma >= gamma_thresh
+
+  # Derive perturbed_gene (pre-normalization) ----
+  df$perturbed_gene <- sub(gene_regex, "", df$perturbation)
+
+  # Optional ID normalization for display ----
+  if (isTRUE(id_simplify)) {
+    df$perturbation <- gsub(id_pattern, id_replacement, df$perturbation)
+  }
+
+  # Attach factor labels & alignment metadata ----
+  if (!is.null(factor_annotation)) {
+    fa <- factor_annotation
+    if (!"factor_label" %in% names(fa)) fa$factor_label <- fa$factor_id
+    if (!"multiply_with" %in% names(fa)) fa$multiply_with <- 1
+    df <- merge(df, fa[, c("factor_id", "factor_label", "multiply_with")], by = "factor_id", all.x = TRUE)
+  } else {
+    df$factor_label  <- df$factor_id
+    df$multiply_with <- 1
+  }
+
+  # Sign alignment ----
+  if (align_sign) {
+    df$beta_aligned <- df$beta * ifelse(is.na(df$multiply_with), 1, df$multiply_with)
+  } else {
+    df$beta_aligned <- df$beta
+  }
+  # Remove "offset" from GSFA ----
+  df <- subset(df, !perturbation == "offset")
+  # Return ----
+  df
+}
+
+# ---- Function to plot effects of genes on a given factor ----
+
+#' plot_factor_effects
+#' @param effects_long output of prep_effects()
+#' @param factor one factor ID present in effects_long$factor_id (e.g., "Factor_12")
+#' @param genes genes to plot (e.g., c("Myc","Max))
+#' @param clamp numeric; clamp effect to ±clamp for stability in visuals (default 2)
+#' @param point_size_max maximum size for size=PIP scale
+plot_factor_effects <- function(effects_long, factor, genes = NULL,
+                                clamp = 2, gene_colors = NULL,
+                                size_breaks = c(0.25, 0.5, 0.75, 1), 
+                                point_size_max = 6,
+                                collapse_y = FALSE,
+                                show_PIP_legend = TRUE,      
+                                x_limits = NULL              
+                                ) {
+  d <- subset(effects_long, factor_id == factor)
+  if (!is.null(genes)) d <- d[d$perturbed_gene %in% genes, , drop = FALSE]
+  if (nrow(d) == 0) stop("No rows left to plot after subsetting.")
+  
+  # Inline clamp (symmetric) ----
+  if (is.null(clamp) || !is.finite(clamp)) {
+    d$beta_plot <- d$beta_aligned
+  } else {
+    lim <- abs(clamp)
+    d$beta_plot <- pmin(pmax(d$beta_aligned, -lim), lim)
+  }
+  
+  # y axis: either per-gene levels (group guides) or a single collapsed line
+  if (isTRUE(collapse_y)) {
+    d$y_axis <- factor("perturbations")
+  } else {
+    ord_df <- plyr::ddply(d, "perturbed_gene",
+                          summarise, m = mean(abs(beta_aligned), na.rm = TRUE))
+    d$perturbed_gene <- factor(
+      d$perturbed_gene,
+      levels = ord_df$perturbed_gene[order(-ord_df$m)]
+    )
+    d$y_axis <- d$perturbed_gene
+  }
+  
+  p <- ggplot(d, aes(y = y_axis, x = beta_plot)) +
+    geom_vline(xintercept = 0, linetype = 3) +
+    geom_point(aes(size = gamma, color = perturbed_gene, alpha = sig)) +
+    scale_size_area(
+      max_size = point_size_max,
+      name     = "PIP",
+      breaks   = size_breaks,
+      limits   = c(0, 1),
+      guide    = if (show_PIP_legend) "legend" else "none"   # <- NEW
+    ) +
+    scale_alpha_manual(values = c(`FALSE` = 0.5, `TRUE` = 1), guide = "none") +
+    theme_bw() + theme(panel.grid = element_blank()) +
+    labs(x = "Effect on program (β; sign-aligned)", y = NULL,
+         title = ifelse(length(unique(d$factor_label)) == 1,
+                        unique(d$factor_label), factor))
+  
+  # Color mapping: use provided named vector (gene → color). If not provided, fall back to Set1.
+  if (is.null(gene_colors)) {
+    p <- p + scale_color_brewer(palette = "Set1", name = "Gene")
+  } else {
+    present <- intersect(names(gene_colors), unique(as.character(d$perturbed_gene)))
+    vals <- gene_colors[present]
+    p <- p + scale_color_manual(values = vals, name = "Gene", na.value = "grey70")
+  }
+  
+  # Optional x-axis limits
+  if (!is.null(x_limits)) {
+    p <- p + scale_x_continuous(limits = x_limits)
+    # or coord_cartesian(xlim = x_limits) if you prefer to crop without dropping data
+  }
+  
+  # Hide y-axis text/ticks when collapsed
+  if (isTRUE(collapse_y)) {
+    p <- p + theme(axis.text.y = element_blank(), axis.ticks.y = element_blank())
+  }
+  
+  p
+}
+
+
+# ---- Function to plot one perturbation across all factors ----
+plot_perturbation_profile <- function(effects_long, 
+                                      perturbation, 
+                                      factors = NULL,
+                                      clamp = 2, 
+                                      label_top = FALSE) {
+  d <- effects_long[effects_long$perturbation == perturbation, , drop = FALSE]
+  if (!is.null(factors)) d <- d[d$factor_id %in% factors, , drop = FALSE]
+  if (nrow(d) == 0) stop("No rows left to plot after subsetting.")
+  
+  # Inline clamp (symmetric) ----
+  if (is.null(clamp) || !is.finite(clamp)) {
+    d$beta_plot <- d$beta_aligned
+    } else {
+      lim <- abs(clamp)
+      d$beta_plot <- pmin(pmax(d$beta_aligned, -lim), lim)
+    }
+  
+  # Use factor_id for y-order to avoid duplicate label issues
+  ord <- order(d$beta_aligned)
+  d$factor_id <- factor(d$factor_id, levels = d$factor_id[ord])
+  
+  # Pretty labels mapping
+  pretty_labels <- ifelse(is.na(d$factor_label), as.character(d$factor_id), as.character(d$factor_label))
+  label_map <- setNames(pretty_labels, as.character(d$factor_id))
+  
+  p <- ggplot(d, aes(x = beta_plot, y = factor_id)) +
+    geom_vline(xintercept = 0, linetype = 3) +
+    geom_point(aes(size = gamma, alpha = sig, color = beta_aligned > 0)) +
+    scale_size_area(max_size = 3, name = "PIP") +
+    scale_alpha_manual(values = c(`FALSE` = 0.2, `TRUE` = 1), guide = "none") +
+    scale_color_brewer(palette = "Set1", guide = "none") +
+    scale_y_discrete(labels = label_map, name = "Factor") +
+    theme_bw() + theme(panel.grid = element_blank()) +
+    labs(x = "Effect on program (β; sign-aligned)", title = perturbation)
+  p
+  }
+
+
+# ---- Function to plot one or more genes across factors (all guides) ----
+plot_perturbation_profile_gene <- function(effects_long,
+                                           perturbed_genes,             # e.g. c("Myc","Max")
+                                           factors = NULL,              # optional subset of factors to include
+                                           exclude_factors = NULL,      # factors to remove explicitly
+                                           auto_exclude_nonsig = FALSE, # remove factor if *all* rows have sig==FALSE
+                                           min_sig_per_factor = NULL,   # min # of significant guides per factor
+                                           clamp = 2,                   # clamp |beta| for plotting
+                                           gene_colors = NULL,          # named vector gene->color
+                                           max_size = 6) {              # control dot size scale (PIP)
+  # subset df of perturbation effects to the perturbed_genes
+  d <- effects_long[effects_long$perturbed_gene %in% perturbed_genes, , drop = FALSE]
+  if (!is.null(factors))         d <- d[d$factor_id %in% factors, , drop = FALSE]
+  if (!is.null(exclude_factors)) d <- d[!d$factor_id %in% exclude_factors, , drop = FALSE]
+  if (nrow(d) == 0) stop("No rows left to plot after subsetting.")
+
+  if (!("sig" %in% names(d))) {
+    stop("Effects dataframe must contain a logical 'sig' column.")
+  }
+
+  # Logical significance (NA treated as FALSE)
+  d$sig_logical <- !is.na(d$sig) & as.logical(d$sig)
+
+  # ------------------------------------------------------------------
+  # 1) Drop (perturbed_gene, factor_id) groups where ALL guides are non-significant
+  # ------------------------------------------------------------------
+  gf_tbl <- aggregate(sig_logical ~ perturbed_gene + factor_id, data = d, FUN = any)
+  gf_tbl$key <- paste(gf_tbl$perturbed_gene, gf_tbl$factor_id, sep = "||")
+  keep_pairs <- gf_tbl$key[gf_tbl$sig_logical]
+
+  pair_key_all <- paste(d$perturbed_gene, d$factor_id, sep = "||")
+  d <- d[pair_key_all %in% keep_pairs, , drop = FALSE]
+
+  if (nrow(d) == 0) {
+    stop("No significant guides in any (gene, factor) combination.")
+  }
+
+  # ------------------------------------------------------------------
+  # 2) Factor-level threshold: drop factors with too few significant guides
+  # ------------------------------------------------------------------
+  if (!is.null(min_sig_per_factor) || isTRUE(auto_exclude_nonsig)) {
+    # Choose threshold:
+    # - if min_sig_per_factor is set, use that
+    # - else if auto_exclude_nonsig is TRUE, require at least 1 significant guide
+    if (!is.null(min_sig_per_factor)) {
+      thresh <- as.integer(min_sig_per_factor)
+      if (is.na(thresh) || thresh < 1L) {
+        stop("min_sig_per_factor must be a positive integer.")
+      }
+    } else {
+      thresh <- 1L  # auto_exclude_nonsig behaviour
+    }
+
+    fac_tbl <- aggregate(sig_logical ~ factor_id, data = d, FUN = sum)  # count of TRUE per factor
+    keep_factors <- as.character(fac_tbl$factor_id[fac_tbl$sig_logical >= thresh])
+
+    d <- d[d$factor_id %in% keep_factors, , drop = FALSE]
+    if (nrow(d) == 0) {
+      stop("No rows left after excluding low-significance factors.")
+    }
+  }
+
+  # (optional) drop helper column
+  d$sig_logical <- NULL
+
+  # ------------------------------------------------------------------
+  # 3) Clamp (symmetric) and plotting (unchanged)
+  # ------------------------------------------------------------------
+  if (is.null(clamp) || !is.finite(clamp)) {
+    d$beta_plot <- d$beta_aligned
+  } else {
+    lim <- abs(clamp)
+    d$beta_plot <- pmin(pmax(d$beta_aligned, -lim), lim)
+  }
+
+  # Factor axis: numeric order (Factor_1, Factor_2, ...)
+  fnum <- suppressWarnings(as.integer(gsub("\\D", "", as.character(d$factor_id))))
+  ord_idx <- order(fnum, d$factor_id, na.last = TRUE)
+  levs <- unique(d$factor_id[ord_idx])
+  d$factor_id <- factor(d$factor_id, levels = rev(levs))
+
+  # Pretty label map (one label per level)
+  lab_df <- unique(d[, c("factor_id", "factor_label")])
+  lab_df$lab <- ifelse(is.na(lab_df$factor_label),
+                       as.character(lab_df$factor_id),
+                       as.character(lab_df$factor_label))
+  label_map <- setNames(lab_df$lab, as.character(lab_df$factor_id))
+
+  # Plot: size = PIP; color = gene; alpha by significance
+  p <- ggplot(d, aes(x = beta_plot, y = factor_id)) +
+    geom_vline(xintercept = 0, linetype = 3) +
+    geom_point(aes(size = gamma, alpha = sig, color = perturbed_gene)) +
+    scale_size_area(max_size = max_size, name = "PIP") +
+    scale_alpha_manual(values = c(`FALSE` = 0.4, `TRUE` = 1), guide = "none") +
+    scale_y_discrete(labels = label_map) +
+    theme_bw() + theme(panel.grid = element_blank()) +
+    labs(x = "Effect on program (sign-aligned β)",
+         title = paste0(paste(unique(d$perturbed_gene), collapse = ", "), " guides"))
+
+  # Gene colors
+  if (is.null(gene_colors)) {
+    p <- p + scale_color_brewer(palette = "Set1", name = "Gene")
+  } else {
+    present <- intersect(names(gene_colors), unique(as.character(d$perturbed_gene)))
+    p <- p + scale_color_manual(values = gene_colors[present], name = "Gene")
+  }
+
+  p
+}
+
+plot_perturbation_profile_gene_grey <- function(effects_long,
+                                           perturbed_genes,
+                                           factors = NULL,
+                                           exclude_factors = NULL,
+                                           factor_order = NULL,
+                                           auto_exclude_nonsig = FALSE,
+                                           min_sig_per_factor = NULL,
+                                           clamp = 2,
+                                           gene_colors = NULL,
+                                           max_size = 6) {
+  d <- effects_long[effects_long$perturbed_gene %in% perturbed_genes, , drop = FALSE]
+  if (!is.null(factors))         d <- d[d$factor_id %in% factors, , drop = FALSE]
+  if (!is.null(exclude_factors)) d <- d[!d$factor_id %in% exclude_factors, , drop = FALSE]
+  if (nrow(d) == 0) stop("No rows left to plot after subsetting.")
+
+  if (!("sig" %in% names(d))) stop("Effects dataframe must contain a logical 'sig' column.")
+
+  d$sig_logical <- !is.na(d$sig) & as.logical(d$sig)
+
+  gf_tbl <- aggregate(sig_logical ~ perturbed_gene + factor_id, data = d, FUN = any)
+  gf_tbl$key <- paste(gf_tbl$perturbed_gene, gf_tbl$factor_id, sep = "||")
+  keep_pairs <- gf_tbl$key[gf_tbl$sig_logical]
+
+  pair_key_all <- paste(d$perturbed_gene, d$factor_id, sep = "||")
+  d <- d[pair_key_all %in% keep_pairs, , drop = FALSE]
+  if (nrow(d) == 0) stop("No significant guides in any (gene, factor) combination.")
+
+  if (!is.null(min_sig_per_factor) || isTRUE(auto_exclude_nonsig)) {
+    if (!is.null(min_sig_per_factor)) {
+      thresh <- as.integer(min_sig_per_factor)
+      if (is.na(thresh) || thresh < 1L) stop("min_sig_per_factor must be a positive integer.")
+    } else {
+      thresh <- 1L
+    }
+
+    fac_tbl <- aggregate(sig_logical ~ factor_id, data = d, FUN = sum)
+    keep_factors <- as.character(fac_tbl$factor_id[fac_tbl$sig_logical >= thresh])
+
+    d <- d[d$factor_id %in% keep_factors, , drop = FALSE]
+    if (nrow(d) == 0) stop("No rows left after excluding low-significance factors.")
+  }
+
+  d$sig_logical <- NULL
+
+  if (is.null(clamp) || !is.finite(clamp)) {
+    d$beta_plot <- d$beta_aligned
+  } else {
+    lim <- abs(clamp)
+    d$beta_plot <- pmin(pmax(d$beta_aligned, -lim), lim)
+  }
+
+  if (!is.null(factor_order)) {
+    # manual order (top to bottom in plot)
+    d$factor_id <- factor(d$factor_id, levels = rev(factor_order))
+  } else {
+    # existing automatic ordering
+    fnum <- suppressWarnings(as.integer(gsub("\\D", "", as.character(d$factor_id))))
+    ord_idx <- order(fnum, d$factor_id, na.last = TRUE)
+    levs <- unique(d$factor_id[ord_idx])
+    d$factor_id <- factor(d$factor_id, levels = rev(levs))
+  }
+
+  lab_df <- unique(d[, c("factor_id", "factor_label")])
+  lab_df$lab <- ifelse(is.na(lab_df$factor_label),
+                       as.character(lab_df$factor_id),
+                       as.character(lab_df$factor_label))
+  label_map <- setNames(lab_df$lab, as.character(lab_df$factor_id))
+
+  # --- color key that greys out non-significant points
+  d$color_key <- ifelse(as.logical(d$sig), as.character(d$perturbed_gene), "Non-significant")
+  d$color_key <- factor(
+    d$color_key,
+    levels = c("Non-significant", sort(unique(as.character(d$perturbed_gene))))
+  )
+
+  p <- ggplot(d, aes(x = beta_plot, y = factor_id)) +
+    geom_vline(xintercept = 0, linetype = 3) +
+    geom_point(aes(size = gamma, alpha = sig, color = color_key)) +
+    scale_size_area(max_size = max_size, name = "PIP") +
+    scale_alpha_manual(values = c(`FALSE` = 0.4, `TRUE` = 1), guide = "none") +
+    scale_y_discrete(labels = label_map) +
+    theme_bw() + theme(panel.grid = element_blank()) +
+    labs(x = "Effect on program (sign-aligned β)",
+         title = paste0(paste(unique(d$perturbed_gene), collapse = ", "), " guides"))
+
+  # Colors: grey for non-sig + gene palette/manual, and keep legend as Gene
+  if (is.null(gene_colors)) {
+    gene_levels <- sort(unique(as.character(d$perturbed_gene)))
+    gene_pal <- setNames(scales::hue_pal()(length(gene_levels)), gene_levels)
+    p <- p + scale_color_manual(
+      values = c("Non-significant" = "grey70", gene_pal),
+      breaks = gene_levels,
+      name = "Gene"
+    )
+  } else {
+    present <- intersect(names(gene_colors), unique(as.character(d$perturbed_gene)))
+    p <- p + scale_color_manual(
+      values = c("Non-significant" = "grey70", gene_colors[present]),
+      breaks = present,
+      name = "Gene"
+    )
+  }
+
+  p
+}
+
+# ---- Function to plot heatmap of perturbation effects on factors (from GSFA paper Github) ----
+dotplot_beta_PIP <- function(beta_pip_matrix, beta_pm_matrix,
+                             marker_names, reorder_markers = marker_names,
+                             reorder_factors = NULL,
+                             remove_factors = NULL,          
+                             exclude_offset = TRUE,
+                             inverse_factors = TRUE,
+                             return_dataframe = FALSE,
+                             color_lgd_title = "Estimated effect size"){
+  # Both 'beta_pip_matrix' and 'beta_pm_matrix' should be factor by guide/marker matrices,
+  # Dots will be colored by effect size and sized by PIP value.
+
+  if (exclude_offset){
+    beta_pip_matrix <- beta_pip_matrix[, -ncol(beta_pip_matrix)]
+    beta_pm_matrix  <- beta_pm_matrix[,  -ncol(beta_pm_matrix)]
+  }
+
+  # ---- PIP ----
+  rownames(beta_pip_matrix) <- 1:nrow(beta_pip_matrix)
+  colnames(beta_pip_matrix) <- marker_names
+  beta_pip_matrix <- beta_pip_matrix[, reorder_markers, drop = FALSE]
+
+  beta_pip_df <- as.data.frame(beta_pip_matrix)
+  beta_pip_df$Factor <- paste0("Factor ", 1:nrow(beta_pip_df))
+
+  if (!is.null(reorder_factors)){
+    beta_pip_df <- beta_pip_df[reorder_factors, , drop = FALSE]
+  }
+
+  #remove named factors
+  if (!is.null(remove_factors)){
+    beta_pip_df <- beta_pip_df[!(beta_pip_df$Factor %in% remove_factors), , drop = FALSE]
+  }
+
+  beta_pip_plot_df <- reshape2::melt(beta_pip_df, value.name = "PIP")
+
+  # ---- PM ----
+  rownames(beta_pm_matrix) <- 1:nrow(beta_pm_matrix)
+  colnames(beta_pm_matrix) <- marker_names
+  beta_pm_matrix <- beta_pm_matrix[, reorder_markers, drop = FALSE]
+
+  beta_pm_df <- as.data.frame(beta_pm_matrix)
+  beta_pm_df$Factor <- paste0("Factor ", 1:nrow(beta_pm_df))
+
+  if (!is.null(reorder_factors)){
+    beta_pm_df <- beta_pm_df[reorder_factors, , drop = FALSE]
+  }
+
+  # remove named factors from PM
+  if (!is.null(remove_factors)){
+    beta_pm_df <- beta_pm_df[!(beta_pm_df$Factor %in% remove_factors), , drop = FALSE]
+  }
+
+  beta_pm_plot_df <- reshape2::melt(beta_pm_df, id.var = "Factor",
+                                   variable.name = "Perturbation",
+                                   value.name = "Estimated effect size")
+
+  beta_pm_plot_df <- beta_pm_plot_df %>%
+    dplyr::mutate(
+      PIP = beta_pip_plot_df$PIP,
+      Perturbation = factor(Perturbation, levels = reorder_markers)
+    )
+
+  if (inverse_factors){
+    beta_pm_plot_df <- beta_pm_plot_df %>%
+      dplyr::mutate(Factor = factor(Factor, levels = rev(beta_pip_df$Factor)))
+  } else {
+    beta_pm_plot_df <- beta_pm_plot_df %>%
+      dplyr::mutate(Factor = factor(Factor, levels = beta_pip_df$Factor))
+  }
+
+  beta_pm_plot_df$`Estimated effect size`[beta_pm_plot_df$`Estimated effect size` > 0.8]  <- 0.8
+  beta_pm_plot_df$`Estimated effect size`[beta_pm_plot_df$`Estimated effect size` < -0.8] <- -0.8
+
+  if (isTRUE(return_dataframe)){
+    return(beta_pm_plot_df)
+  }
+
+  plot_out <- ggplot2::ggplot(beta_pm_plot_df) +
+    ggplot2::geom_point(ggplot2::aes(x = Perturbation, y = Factor,
+                                     size = PIP, color = `Estimated effect size`)) +
+    ggplot2::scale_color_gradientn(
+      limits = c(-0.8, 0.8),
+      colours = c("purple3", "purple1", "grey90", "darkorange", "darkorange2"),
+      breaks = seq(-0.8, 0.8, 0.4)
+    ) +
+    ggplot2::scale_x_discrete(labels = function(x) gsub("-CRISPRi-sgRNA", "", x)) +
+    ggplot2::scale_size_continuous(
+      name   = "PIP",
+      breaks = c(0, 0.5, 1),
+      labels = c("0", "0.5", "1"),
+      limits = c(0, 1)
+    ) +
+    ggplot2::theme_void() +
+    ggplot2::theme(
+      axis.text.x   = ggplot2::element_text(size = 13, angle = 90, hjust = 1),
+      axis.text.y   = ggplot2::element_text(size = 13, hjust = 1),
+      legend.title  = ggplot2::element_text(size = 13),
+      legend.text   = ggplot2::element_text(size = 12),
+      plot.margin   = ggplot2::margin(10, 10, 10, 12)
+    ) +
+    ggplot2::labs(color = color_lgd_title)
+
+  return(plot_out)
+}
+
+
+
+# ---- Function to plot jittered points plot for a single factor ----
+plot_factor_jitter <- function(effects_long,
+                               factor,                      # e.g. "Factor_12"
+                               highlight_genes = NULL,      # e.g. c("Myc","Max")
+                               gene_colors = NULL,          # named vector: c(Myc="#8B0000", Max="#FF0000")
+                               clamp = 2,                   # clamp |beta| for plotting
+                               jitter_width = 0.15,         # horizontal jitter
+                               bg_color = "grey70",         # background (non-highlight) point color
+                               bg_size = 1.8,               # background point size
+                               hl_size = 2.6,               # highlight point size
+                               stroke_hl = 0.35) {          # black outline width for highlights
+
+  # Subset to the factor
+  d <- effects_long[effects_long$factor_id == factor, , drop = FALSE]
+  if (nrow(d) == 0) stop("No rows for the requested factor.")
+
+  # X label (use pretty label if available)
+  x_lab <- if (!all(is.na(d$factor_label)) && length(unique(d$factor_label)) == 1) {
+    as.character(unique(d$factor_label))
+  } else {
+    factor
+  }
+  d$._x <- factor(x_lab, levels = x_lab)  # single x category
+
+  # Clamp beta for plotting
+  if (is.null(clamp) || !is.finite(clamp)) {
+    d$beta_plot <- d$beta_aligned
+  } else {
+    lim <- abs(clamp)
+    d$beta_plot <- pmin(pmax(d$beta_aligned, -lim), lim)
+  }
+
+  # Background: all points in grey, alpha by significance (FALSE = 0.5, TRUE = 1)
+  p <- ggplot(d, aes(x = ._x, y = beta_plot)) +
+    geom_hline(yintercept = 0, linetype = 3) +
+    geom_point(aes(alpha = sig),
+               color = bg_color, size = bg_size,
+               position = position_jitter(width = jitter_width, height = 0)) +
+    scale_alpha_manual(values = c(`FALSE` = 0.5, `TRUE` = 1), guide = "none") +
+    labs(x = NULL, y = "Effect on program (β; sign-aligned)", title = x_lab) +
+    theme_bw() + theme(panel.grid = element_blank())
+
+  # Overlay: highlighted genes in color, bigger, with a thin black outline (shape 21)
+  if (!is.null(highlight_genes) && length(highlight_genes)) {
+    present <- intersect(highlight_genes, unique(as.character(d$perturbed_gene)))
+    if (length(present)) {
+      d_hl <- d[d$perturbed_gene %in% present, , drop = FALSE]
+      p <- p +
+        geom_point(aes(fill = perturbed_gene, alpha = sig),
+                   data = d_hl,
+                   color = "black", stroke = stroke_hl, size = hl_size, shape = 21,
+                   alpha = 1,
+                   position = position_jitter(width = jitter_width, height = 0)) +
+        (if (is.null(gene_colors)) {
+           scale_fill_brewer(palette = "Set1", name = "Gene")
+         } else {
+           scale_fill_manual(values = gene_colors[present], name = "Gene")
+         })
+    }
+  }
+
+  p
+}
+# ---- Function to plot points plot for a single factor, arranged by complex ----
+plot_factor_bycomplex <- function(effects_long,
+                                  factor,
+                                  highlight_genes = NULL,
+                                  gene_colors = NULL,
+                                  clamp = 2,
+                                  sep_col = "perturbed_complex",
+                                  bg_size_sig = 2.2,
+                                  bg_size_nonsig = 1.4,
+                                  hl_size = 2.8,
+                                  stroke_hl = 0.35,
+                                  other_label = "Other",
+                                  other_color = "grey70",
+                                  drop_all_nonsig_genes = FALSE,
+                                  show_color_legend = TRUE) {
+
+  stopifnot(is.data.frame(effects_long))
+  if (!all(c("factor_id", "beta_aligned", "sig", "perturbed_gene") %in% names(effects_long))) {
+    stop("effects_long must contain: factor_id, beta_aligned, sig, perturbed_gene")
+  }
+  if (!sep_col %in% names(effects_long)) {
+    stop(paste0("sep_col '", sep_col, "' not found in effects_long."))
+  }
+
+  d <- effects_long[effects_long$factor_id == factor, , drop = FALSE]
+  if (nrow(d) == 0) stop("No rows for the requested factor.")
+
+  factor_lab <- if ("factor_label" %in% names(d) &&
+                    !all(is.na(d$factor_label)) &&
+                    length(unique(d$factor_label)) == 1) {
+    as.character(unique(d$factor_label))
+  } else {
+    factor
+  }
+
+  # Clamp beta for plotting
+  if (is.null(clamp) || !is.finite(clamp)) {
+    d$beta_plot <- d$beta_aligned
+  } else {
+    lim <- abs(clamp)
+    d$beta_plot <- pmin(pmax(d$beta_aligned, -lim), lim)
+  }
+
+  # Drop genes where ALL available perturbations are non-significant
+  if (isTRUE(drop_all_nonsig_genes)) {
+    sig_true <- !is.na(d$sig) & d$sig
+    any_sig_by_gene <- tapply(sig_true, d$perturbed_gene, any)
+    drop_genes <- names(any_sig_by_gene)[!any_sig_by_gene]
+    if (length(drop_genes)) {
+      d <- d[!(d$perturbed_gene %in% drop_genes), , drop = FALSE]
+      if (nrow(d) == 0) stop("After dropping all-nonsignificant genes, no rows remain for this factor.")
+    }
+  }
+
+  # Enforce alphabetical ordering on sep_col (A->Z upward) ----
+  d[[sep_col]] <- trimws(as.character(d[[sep_col]]))
+
+  levs <- sort(unique(d[[sep_col]][!is.na(d[[sep_col]])]), decreasing = TRUE)
+  levs <- levs[levs != other_label]
+  if (any(d[[sep_col]] == other_label, na.rm = TRUE)) levs <- c(other_label, levs)
+
+  d[[sep_col]] <- factor(d[[sep_col]], levels = levs)
+
+  # Colors: auto palette, but force 'Other' to be grey ----
+  pal <- scales::hue_pal()(length(levs))
+  names(pal) <- levs
+  if (other_label %in% names(pal)) pal[[other_label]] <- other_color
+
+  # Split for sizes
+  sig_true <- !is.na(d$sig) & d$sig
+  d_sig <- d[sig_true, , drop = FALSE]
+  d_nonsig <- d[!sig_true, , drop = FALSE]
+
+  p <- ggplot(d, aes(x = beta_plot, y = .data[[sep_col]])) +
+    geom_vline(xintercept = 0, linetype = 3) +
+    geom_point(data = d_nonsig, aes(color = .data[[sep_col]]),
+               size = bg_size_nonsig, alpha = 0.5) +
+    geom_point(data = d_sig, aes(color = .data[[sep_col]]),
+               size = bg_size_sig, alpha = 1) +
+    scale_y_discrete(limits = levs) +  # force order
+    scale_color_manual(values = pal, name = sep_col, drop = FALSE) +
+    labs(x = "Effect on program (β; sign-aligned)", y = NULL, title = factor_lab) +
+    theme_bw() +
+    theme(panel.grid = element_blank())
+  
+  # Hide the COLOR legend (sep_col) if requested
+  if (!isTRUE(show_color_legend)) {
+    p <- p + guides(color = "none")
+  }
+  
+  # Highlight override (fill by gene)
+  if (!is.null(highlight_genes) && length(highlight_genes)) {
+    present <- intersect(highlight_genes, unique(as.character(d$perturbed_gene)))
+    if (length(present)) {
+      d_hl <- d[d$perturbed_gene %in% present, , drop = FALSE]
+      sig_true_hl <- !is.na(d_hl$sig) & d_hl$sig
+      d_hl_sig <- d_hl[sig_true_hl, , drop = FALSE]
+      d_hl_nonsig <- d_hl[!sig_true_hl, , drop = FALSE]
+
+      p <- p +
+        geom_point(data = d_hl_nonsig,
+                   aes(fill = perturbed_gene),
+                   color = "black", stroke = stroke_hl, size = hl_size * 0.85, shape = 21,
+                   alpha = 1) +
+        geom_point(data = d_hl_sig,
+                   aes(fill = perturbed_gene),
+                   color = "black", stroke = stroke_hl, size = hl_size, shape = 21,
+                   alpha = 1) +
+        (if (is.null(gene_colors)) {
+          scale_fill_brewer(palette = "Set1", name = "Gene")
+        } else {
+          scale_fill_manual(values = gene_colors[present], name = "Gene")
+        })
+    }
+  }
+
+  p
+}
+
+# ---- Function to plot perturbation effects for a given factor, labeling top perturbations ----
+plot_perturbations_on_factor <- function(effects_long, factor,
+                                         highlight_genes = NULL, gene_colors = NULL,
+                                         clamp = 2,
+                                         bg_color = "grey70", bg_size = 1.8,
+                                         hl_size = 2.6, stroke_hl = 0.35,
+                                         as_plotly = TRUE) {
+  d <- effects_long[effects_long$factor_id == factor, , drop = FALSE]
+  if (nrow(d) == 0) stop("No rows for the requested factor.")
+  title_lab <- if (!all(is.na(d$factor_label)) && length(unique(d$factor_label)) == 1)
+    as.character(unique(d$factor_label)) else factor
+
+  # clamp
+  d$beta_plot <- if (is.null(clamp) || !is.finite(clamp)) d$beta_aligned else {
+    lim <- abs(clamp); pmin(pmax(d$beta_aligned, -lim), lim)
+  }
+
+  # base ggplot, add tooltip text=perturbation on BOTH layers
+  p <- ggplot(d, aes(x = beta_plot, y = gamma)) +
+    geom_vline(xintercept = 0, linetype = 3) +
+    geom_point(aes(alpha = sig, text = perturbation),
+               color = bg_color, size = bg_size) +
+    scale_alpha_manual(values = c(`FALSE` = 0.5, `TRUE` = 1), guide = "none") +
+    labs(x = "Effect on program (β; sign-aligned)", y = "PIP (γ)", title = title_lab) +
+    theme_bw() + theme(panel.grid = element_blank())
+
+  if (!is.null(highlight_genes) && length(highlight_genes)) {
+    present <- intersect(highlight_genes, unique(as.character(d$perturbed_gene)))
+    if (length(present)) {
+      d_hl <- d[d$perturbed_gene %in% present, , drop = FALSE]
+      p <- p +
+        geom_point(aes(fill = perturbed_gene, alpha = sig, text = perturbation),
+                   data = d_hl, color = "black", stroke = stroke_hl,
+                   size = hl_size, shape = 21) +
+        (if (is.null(gene_colors)) scale_fill_brewer(palette = "Set1", name = "Gene")
+         else scale_fill_manual(values = gene_colors[present], name = "Gene"))
+    }
+  }
+
+  if (isTRUE(as_plotly)) {
+    ggplotly(p, tooltip = "text")
+  } else {
+    p
+  }
+}
+
+# ---- Function to plot points plot for a single factor, arranged by complex, plotly perturbations ----
+plot_factor_bycomplex_plotly <- function(effects_long,
+                                  factor,
+                                  highlight_genes = NULL,
+                                  gene_colors = NULL,
+                                  clamp = 2,
+                                  sep_col = "perturbed_complex",
+                                  bg_size_sig = 2.2,
+                                  bg_size_nonsig = 1.4,
+                                  hl_size = 2.8,
+                                  stroke_hl = 0.35,
+                                  other_label = "Other",
+                                  other_color = "grey70",
+                                  drop_all_nonsig_genes = FALSE) {
+
+  stopifnot(is.data.frame(effects_long))
+  if (!all(c("factor_id", "beta_aligned", "sig", "perturbed_gene") %in% names(effects_long))) {
+    stop("effects_long must contain: factor_id, beta_aligned, sig, perturbed_gene")
+  }
+  if (!("gamma" %in% names(effects_long))) {
+    stop("effects_long must contain: gamma (for tooltip)")
+  }
+  if (!sep_col %in% names(effects_long)) {
+    stop(paste0("sep_col '", sep_col, "' not found in effects_long."))
+  }
+
+  d <- effects_long[effects_long$factor_id == factor, , drop = FALSE]
+  if (nrow(d) == 0) stop("No rows for the requested factor.")
+
+  factor_lab <- if ("factor_label" %in% names(d) &&
+                    !all(is.na(d$factor_label)) &&
+                    length(unique(d$factor_label)) == 1) {
+    as.character(unique(d$factor_label))
+  } else {
+    factor
+  }
+
+  # Clamp beta for plotting
+  if (is.null(clamp) || !is.finite(clamp)) {
+    d$beta_plot <- d$beta_aligned
+  } else {
+    lim <- abs(clamp)
+    d$beta_plot <- pmin(pmax(d$beta_aligned, -lim), lim)
+  }
+
+  # Tooltip (Plotly supports HTML, so we can bold perturbation)
+  d$tooltip <- paste0(
+    "<b>Perturbation:</b> <b>", d$perturbation, "</b>",
+    "<br><b>gamma:</b> ", signif(d$gamma, 4),
+    "<br><b>beta_aligned:</b> ", signif(d$beta_aligned, 4)
+  )
+
+  # Drop genes where ALL available perturbations are non-significant
+  if (isTRUE(drop_all_nonsig_genes)) {
+    sig_true <- !is.na(d$sig) & d$sig
+    any_sig_by_gene <- tapply(sig_true, d$perturbed_gene, any)
+    drop_genes <- names(any_sig_by_gene)[!any_sig_by_gene]
+    if (length(drop_genes)) {
+      d <- d[!(d$perturbed_gene %in% drop_genes), , drop = FALSE]
+      if (nrow(d) == 0) stop("After dropping all-nonsignificant genes, no rows remain for this factor.")
+    }
+  }
+
+  # ---- Enforce alphabetical ordering on sep_col (A->Z upward), with Other at bottom ----
+  d[[sep_col]] <- trimws(as.character(d[[sep_col]]))
+
+  levs <- sort(unique(d[[sep_col]][!is.na(d[[sep_col]])]), decreasing = TRUE)
+  levs <- levs[levs != other_label]
+  if (any(d[[sep_col]] == other_label, na.rm = TRUE)) levs <- c(other_label, levs)
+
+  d[[sep_col]] <- factor(d[[sep_col]], levels = levs)
+
+  # ---- Colors: auto palette, but force Other grey ----
+  pal <- scales::hue_pal()(length(levs))
+  names(pal) <- levs
+  if (other_label %in% names(pal)) pal[[other_label]] <- other_color
+
+  # Split for sizes
+  sig_true <- !is.na(d$sig) & d$sig
+  d_sig <- d[sig_true, , drop = FALSE]
+  d_nonsig <- d[!sig_true, , drop = FALSE]
+
+  p <- ggplot2::ggplot(d, ggplot2::aes(x = beta_plot, y = .data[[sep_col]], text = tooltip)) +
+    ggplot2::geom_vline(xintercept = 0, linetype = 3) +
+    ggplot2::geom_point(data = d_nonsig, ggplot2::aes(color = .data[[sep_col]]),
+                        size = bg_size_nonsig, alpha = 0.5) +
+    ggplot2::geom_point(data = d_sig, ggplot2::aes(color = .data[[sep_col]]),
+                        size = bg_size_sig, alpha = 1) +
+    ggplot2::scale_y_discrete(limits = levs) +  # force order
+    ggplot2::scale_color_manual(values = pal, name = sep_col, drop = FALSE) +
+    ggplot2::labs(x = "Effect on program (β; sign-aligned)", y = NULL, title = factor_lab) +
+    ggplot2::theme_bw() +
+    ggplot2::theme(panel.grid = ggplot2::element_blank())
+
+  # Highlight override (fill by gene)
+  if (!is.null(highlight_genes) && length(highlight_genes)) {
+    present <- intersect(highlight_genes, unique(as.character(d$perturbed_gene)))
+    if (length(present)) {
+      d_hl <- d[d$perturbed_gene %in% present, , drop = FALSE]
+      sig_true_hl <- !is.na(d_hl$sig) & d_hl$sig
+      d_hl_sig <- d_hl[sig_true_hl, , drop = FALSE]
+      d_hl_nonsig <- d_hl[!sig_true_hl, , drop = FALSE]
+
+      p <- p +
+        ggplot2::geom_point(data = d_hl_nonsig,
+                            ggplot2::aes(fill = perturbed_gene, text = tooltip),
+                            color = "black", stroke = stroke_hl, size = hl_size * 0.85, shape = 21,
+                            alpha = 1) +
+        ggplot2::geom_point(data = d_hl_sig,
+                            ggplot2::aes(fill = perturbed_gene, text = tooltip),
+                            color = "black", stroke = stroke_hl, size = hl_size, shape = 21,
+                            alpha = 1) +
+        (if (is.null(gene_colors)) {
+          ggplot2::scale_fill_brewer(palette = "Set1", name = "Gene")
+        } else {
+          ggplot2::scale_fill_manual(values = gene_colors[present], name = "Gene")
+        })
+    }
+  }
+
+  # Convert to plotly with the custom tooltip
+  plotly::ggplotly(p, tooltip = "text")
+}
+
+```
+
+## Prepare perturbation effects
+
+```{r}
+# make effects df for 21 GRPs
+# note. here I am use the factor_annotation directly made by the flip signs function, it does not include a column that renames the factor
+eff <- prep_effects(beta = gibbs_PM_21$beta_pm,
+                   gamma = gibbs_PM_21$Gamma_pm,
+                   factor_annotation = W_mat_21_mutliply_with,
+                   align_sign = TRUE,
+                   gamma_thresh = 0.8,
+                   id_simplify = TRUE)
+```
+
+## Dotplot of perturbation effects
+
+```{r}
+# plot for a selection of genes to show that effects are relatively consistent between guides
+#genes_of_interest <- c("Runx1","Cbfb","Smarcd1","Brd9","Setdb1","Atf7ip",
+#                       "Ash2l","Rbbp5","Myc","Max")
+genes_of_interest <- c("Runx1","Cbfb","Smarcd1","Brd9","Ash2l","Rbbp5","Myc","Max")
+
+# get guides
+subset_guides <- perturbation_guide_names[grep(paste(genes_of_interest, collapse="|"), perturbation_guide_names)]
+
+# reorder guides
+gene <- sub("-CRISPRi.*", "", subset_guides)
+o <- order(match(gene, genes_of_interest), subset_guides)
+subset_guides_reordered <- rev(subset_guides[o])
+
+# change signs in the Beta matrix by the multiply_with column
+beta_signaligned_mat <- t(gibbs_PM_21$beta_pm)
+head(beta_signaligned_mat[,1:2])
+mw <- setNames(W_mat_21_mutliply_with$multiply_with,
+               W_mat_21_mutliply_with$factor_id)
+beta_signaligned_mat <- sweep(beta_signaligned_mat, 1, mw[rownames(beta_signaligned_mat)], `*`)
+head(beta_signaligned_mat[,1:2])
+
+# plot dotplot
+dotplot_beta_mat <- dotplot_beta_PIP(t(gibbs_PM_21$Gamma_pm), beta_signaligned_mat,
+                                     marker_names = perturbation_guide_names,
+                                     reorder_markers = subset_guides_reordered,
+                                     remove_factors = c("Factor 7", "Factor 10"),
+                                     inverse_factors = F) + coord_flip()
+dotplot_beta_mat
+```
+
+```{r, eval=FALSE}
+ggsave( filename = "manuscript/fig2/dotplot_beta_mat_2.pdf",
+        plot     = dotplot_beta_mat,
+        width    = 7.5,
+        height   = 7.5,
+        units    = "in"
+        )
+
+ggsave( filename = "manuscript/fig2/dotplot_beta_mat_no_Setdb1.pdf",
+        plot     = dotplot_beta_mat,
+        width    = 7.5,
+        height   = 6,
+        units    = "in"
+        )
+
+```
+
+## Dotplots GRP3/Factor_3 (perturbation effects on inflammation response)
+
+```{r}
+# plot effects of GTFs on inflammation response (Factor_3)
+Factor_3_GTFs <- plot_factor_effects(eff, 
+                    factor = "Factor_3", 
+                    genes = c("Taf12","Gtf2b", "Med8"),
+                    gene_colors = c(Taf12 = 'darkorange2', Gtf2b = 'firebrick3', Med8 ='goldenrod3'),
+                    show_PIP_legend = FALSE,
+                    x_limits = c(-1.3,1),
+                    point_size_max = 10,
+                    collapse_y = TRUE)
+Factor_3_GTFs
+
+# profiles with all factors affected by a given perturbation
+Men1_Psip1_profile <- plot_perturbation_profile_gene(eff,
+                               perturbed_genes = c("Men1","Psip1"),
+                               exclude_factors = c("Factor_7","Factor_10"),
+                               min_sig_per_factor = 2,
+                               auto_exclude_nonsig = TRUE,
+                               gene_colors = c(Men1 = 'skyblue3',Psip1 = 'cyan4' ))
+Men1_Psip1_profile
+
+GTFs_profile <- plot_perturbation_profile_gene(eff,
+                               perturbed_genes = c("Taf12","Gtf2b", "Med8"),
+                               exclude_factors = c("Factor_7","Factor_10"),
+                               min_sig_per_factor = 2,
+                               auto_exclude_nonsig = TRUE,
+                               gene_colors = c(Taf12 = 'darkorange2', Gtf2b = 'firebrick3', Med8 ='goldenrod3'))
+GTFs_profile
+
+# Ythdc1 most significant on Factor_13 (HSC self-renewal)
+Ythdc1 <- plot_perturbation_profile_gene(eff,
+                               perturbed_genes = c("Ythdc1"),
+                               exclude_factors = c("Factor_7","Factor_10"),
+                               min_sig_per_factor = 1,
+                               auto_exclude_nonsig = TRUE,
+                               gene_colors = c(Ythdc1 = 'seagreen'))
+Ythdc1
+
+# Setdb1-Atf7ip most significant on Factor_2 (unknown) and Factor_5 (Integrins & adhesion?)
+Setdb1_Atf7ip_profile <- plot_perturbation_profile_gene(eff,
+                               perturbed_genes = c("Setdb1","Atf7ip"),
+                               exclude_factors = c("Factor_7","Factor_10"),
+                               min_sig_per_factor = 2,
+                               auto_exclude_nonsig = TRUE,
+                               gene_colors = c(Setdb1 = 'navyblue', Atf7ip = 'blue'))
+Setdb1_Atf7ip_profile
+
+
+
+```
+
+```{r, eval=FALSE}
+ggsave( filename = "manuscript/fig2/Men1_Psip1_profile_dotplot.pdf",
+        plot     = Men1_Psip1_profile,
+        width    = 6,
+        height   = 2,
+        units    = "in"
+        )
+ggsave( filename = "manuscript/fig2/GTFs_profile_dotplot.pdf",
+        plot     = GTFs_profile,
+        width    = 6,
+        height   = 2.5,
+        units    = "in"
+        )
+```
+
+## Effects on factor by complex
+
+```{r}
+# create a mapping of perturbed_gene to perturbed_complex
+gene_to_cluster <- c(
+  'Mtf1'  = 'Mtf1',
+  'Spi1' = 'Spi1',
+  'Cebpa' = 'Cebpa',
+  'Ints2' = 'Ints2',
+  'Setdb1' = 'Setdb1-Atf7ip',
+  'Atf7ip' = 'Setdb1-Atf7ip',
+  'Smarcd2' = 'Smarcd2-Smarcc1',
+  'Smarcc1' = 'Smarcd2-Smarcc1',
+  'Ythdc1' = 'Ythdc1',
+  'Brd9' = 'Brd9-Smarcd1',
+  'Smarcd1' = 'Brd9-Smarcd1',
+  'Psip1' = 'Psip1-Men1',
+  'Men1' = 'Psip1-Men1',
+  'Myc' = 'Myc-Max',
+  'Max' = 'Myc-Max',
+  'Runx1' = 'Runx1-Cbfb',
+  'Cbfb' = 'Runx1-Cbfb',
+  'Nrf1' = 'Nrf1',
+  'Ash2l' = 'Ash2l-Rbbp5',
+  'Rbbp5' = 'Ash2l-Rbbp5',
+  'Taf12' = 'Taf12-Gtf2b-Med8',
+  'Gtf2b' = 'Taf12-Gtf2b-Med8',
+  'Med8' = 'Taf12-Gtf2b-Med8',
+  'Msi2' = 'Msi2-Myb',
+  'Myb' = 'Msi2-Myb',
+  'Erg' = 'Erg-Fli1',
+  'Fli1' = 'Erg-Fli1',
+  'Med1' = 'Med1-Med24',
+  'Med24' = 'Med1-Med24',
+  'Tcerg1' = 'Tcerg1-Hdac3',
+  'Hdac3' = 'Tcerg1-Hdac3',
+  'Zfx' = 'Zfx'  )
+
+eff <- eff %>%
+  mutate(perturbed_cluster = ifelse(
+    is.na(gene_to_cluster[perturbed_gene]),
+    "Other",
+    unname(gene_to_cluster[perturbed_gene])
+  ))
+
+# import cluster groups of perturbations from HDBSCAN clusters (+ annotations)
+tSNE_cluster_label <- read_csv("~/cluster/jbowness/CRISPRi500/HSC/clean_analysis/manuscript/int_files/tSNE_cluster_label.csv")
+
+# subset eff by perturbations in tSNE_cluster_label
+eff_sub <- eff %>%
+  subset(perturbation %in% tSNE_cluster_label$perturbation)
+
+# add tSNE clusters to eff
+eff_clusters <- merge(
+  eff_sub,
+  tSNE_cluster_label[, c("perturbation", "cluster_merge", "cluster_label")],
+  by = "perturbation",
+  all.x = TRUE
+)
+
+# make column of gamma * beta_aligned
+eff_clusters$gammaXbeta_aligned <- eff_clusters$gamma * eff_clusters$beta_aligned
+
+# Average of effects over all rows in cluster (multiply gamma * beta_aligned, then mean) 
+eff_clusters <- eff_clusters %>%
+  group_by(cluster_merge, factor_id) %>%
+  mutate(mean_gammaXbeta_aligned = mean(gammaXbeta_aligned, na.rm = TRUE)) %>%
+  ungroup()
+
+# Use this to make a matrix for heirarchical clustering of cluster_merge and then a heatmap 
+cluster_merge_by_factor <- eff_clusters %>%
+  distinct(cluster_merge, factor_id, mean_gammaXbeta_aligned) %>%
+  mutate(
+    factor_id = factor(
+      factor_id,
+      levels = paste0("Factor_", 1:21)  # adjust if needed
+    )
+  ) %>%
+  pivot_wider(
+    names_from  = factor_id,
+    values_from = mean_gammaXbeta_aligned,
+    values_fill = 0   # or NA; see note below
+  )
+cluster_merge_by_factor <- as.data.frame(cluster_merge_by_factor)
+rownames(cluster_merge_by_factor) <- cluster_merge_by_factor$cluster_merge
+cluster_merge_by_factor_mat <- as.matrix(cluster_merge_by_factor[, setdiff(names(cluster_merge_by_factor), "cluster_merge")])
+# ensure Factors ordered from 1:21
+factor_order <- paste0("Factor_", 1:21)
+cluster_merge_by_factor_mat <- cluster_merge_by_factor_mat[, intersect(factor_order, colnames(cluster_merge_by_factor_mat)), drop = FALSE]
+
+# recolour purple to orange
+col_fun <- circlize::colorRamp2(
+  c(-1, -0.4, 0, 0.4, 1),
+  c("purple3", "purple1", "white", "darkorange", "darkorange2")
+)
+
+
+# extract the clustering order 
+cluster_ht_drawn <- draw(
+  ComplexHeatmap::Heatmap(cluster_merge_by_factor_mat,
+                          name = "Perturbation Effect",
+                          cluster_rows = TRUE,
+                          col = col_fun,
+                          cluster_columns = FALSE,
+                          show_row_names = TRUE,
+                          show_column_names = TRUE,
+                          row_names_gp = grid::gpar(fontsize = 6),
+                          column_names_gp = grid::gpar(fontsize = 7)
+                          )
+  )
+
+row_ord_idx <- row_order(cluster_ht_drawn)
+cluster_merge_ordered <- rownames(cluster_merge_by_factor_mat)[row_ord_idx]
+```
+
+## Heatmap of all guide effects on GRPs
+
+```{r}
+# order the perturbations by this clustering order
+perturbation_ordered <- eff_clusters %>%
+  mutate(
+    cluster_merge = factor(cluster_merge, levels = cluster_merge_ordered)
+  ) %>%
+  arrange(cluster_merge) %>%
+  distinct(perturbation, cluster_merge) %>%      
+  arrange(cluster_merge, perturbation) %>%
+  pull(perturbation)
+
+perturbation_ordered
+
+# also make a heatmap with all perturbations, just clustering by the clusters
+perturbation_by_factor <- eff_clusters %>%
+  distinct(perturbation, factor_id, gammaXbeta_aligned) %>%
+  mutate(
+    factor_id = factor(
+      factor_id,
+      levels = paste0("Factor_", 1:21)  # adjust if needed
+    )
+  ) %>%
+  pivot_wider(
+    names_from  = factor_id,
+    values_from = gammaXbeta_aligned,
+    values_fill = 0   # or NA; see note below
+  )
+perturbation_by_factor <- as.data.frame(perturbation_by_factor)
+rownames(perturbation_by_factor) <- perturbation_by_factor$perturbation
+perturbation_by_factor_mat <- as.matrix(perturbation_by_factor[, setdiff(names(perturbation_by_factor), "perturbation")])
+# ensure Factors ordered from 1:21
+factor_order <- paste0("Factor_", 1:21)
+perturbation_by_factor_mat <- perturbation_by_factor_mat[, intersect(factor_order, colnames(perturbation_by_factor_mat)), drop = FALSE]
+
+# use orders of perturbations from clustering approach
+perturbation_by_factor_mat <- perturbation_by_factor_mat[perturbation_ordered, , drop = FALSE]
+
+# clamp at 1 and -1
+perturbation_by_factor_mat_clamped <- perturbation_by_factor_mat
+perturbation_by_factor_mat_clamped[perturbation_by_factor_mat_clamped >  1] <-  1
+perturbation_by_factor_mat_clamped[perturbation_by_factor_mat_clamped < -1] <- -1
+
+# recolour purple to orange
+col_fun <- circlize::colorRamp2(
+  c(-1, -0.5, 0, 0.5, 1),
+  c("purple3", "purple1", "white", "darkorange", "darkorange2")
+)
+
+ComplexHeatmap::Heatmap(
+  perturbation_by_factor_mat_clamped,
+  name = "Perturbation Effect",
+  col = col_fun,
+  cluster_rows = FALSE,     
+  cluster_columns = FALSE,
+  show_row_names = TRUE,
+  show_column_names = TRUE,
+  row_names_gp = grid::gpar(fontsize = 5),
+  column_names_gp = grid::gpar(fontsize = 7)
+)
+```
+
+## Plot effects of cluster on Factor_13
+
+```{r}
+# example for Factor_13
+plot_factor_bycomplex(eff,
+                      factor = "Factor_13",
+                      highlight_genes = NULL,
+                      clamp = 1,
+                      sep_col = "perturbed_cluster",
+                      drop_all_nonsig_genes = TRUE,
+                      show_color_legend = FALSE
+                      )
+```
+
+## loop through to save plots for all factors
+
+```{r, eval=FALSE}
+# loop through to save plots for all factors
+out_dir <- "manuscript/int_files/pert_effects_on_factors"
+out_dir <- "manuscript/int_files/pert_effects_on_factors_resize"
+
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+# factors to plot: Factor_1 ... Factor_21 excluding 7 and 10
+factors <- paste0("Factor_", setdiff(1:21, c(7, 10)))
+
+# loop + save PDFs
+for (f in factors) {
+  p <- plot_factor_bycomplex(
+    eff,
+    factor = f,
+    highlight_genes = NULL,
+    clamp = 1,
+    sep_col = "perturbed_cluster",
+    drop_all_nonsig_genes = TRUE,
+    show_color_legend = FALSE
+  )
+
+  ggsave(
+    filename = file.path(out_dir, paste0(f, ".pdf")),
+    plot = p,
+    device = cairo_pdf,
+    width = 4,
+    height = 4,
+    units = "in"
+  )
+}
+```
+
+## loop through all and save as plotly
+
+```{r, eval=FALSE}
+# example for Factor_13
+plot_factor_bycomplex_plotly(eff,
+                      factor = "Factor_13",
+                      highlight_genes = NULL,
+                      clamp = 1,
+                      sep_col = "perturbed_cluster",
+                      drop_all_nonsig_genes = TRUE
+                      )
+# loop through to save plots for all factors
+out_dir <- "manuscript/int_files/pert_effects_on_factors_plotly"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+# factors to plot: Factor_1 ... Factor_21 excluding 7 and 10
+factors <- paste0("Factor_", setdiff(1:21, c(7, 10)))
+
+# loop + save htmls
+for (f in factors) {
+  p <- plot_factor_bycomplex_plotly(
+    eff,
+    factor = f,
+    highlight_genes = NULL,
+    clamp = 1,
+    sep_col = "perturbed_cluster",
+    drop_all_nonsig_genes = TRUE
+  )
+  
+  htmlwidgets::saveWidget(
+  widget = p,
+  file = file.path(out_dir, paste0(f, ".html")),
+  selfcontained = TRUE
+  )
+}
+
+```
+
+## Violins Factor_12 (NFkB) and Factor_17 (LT-HSC niche)
+
+```{r}
+plot_perturbations_on_factor(eff,
+                   factor = "Factor_12",
+                   clamp = 3, #maximum axes
+                   highlight_genes = c("Mtf1","Myc"),
+                   as_plotly = TRUE)
+
+# plot interactive violins
+plot_perturbations_on_factor(eff,
+                   factor = "Factor_6",
+                   clamp = 3, #maximum axes
+                   highlight_genes = c("Mtf1","Myc"),
+                   as_plotly = TRUE)
+
+plot_perturbations_on_factor(eff,
+                   factor = "Factor_12",
+                   clamp = 3, #maximum axes
+                   highlight_genes = c("Mtf1","Myc"),
+                   as_plotly = TRUE)
+
+plot_perturbations_on_factor(eff,
+                   factor = "Factor_17",
+                   clamp = 3, #maximum axes
+                   highlight_genes = c("Cbfb", "Runx1","Cebpa","Tcerg1"),
+                   as_plotly = TRUE)
+
+# plot all perturbations for particular factor (Factor_20 = Biosynthesis) highlighting Myc-Max and Myb-Msi2
+plot_factor_jitter(eff,
+                   factor = "Factor_20",
+                   clamp = 3, 
+                   highlight_genes = c("Myc","Max","Myb","Msi2"))
+
+plot_perturbations_on_factor(eff,
+                   factor = "Factor_1",
+                   clamp = 3, #maximum axes
+                   highlight_genes = c("Ash2l", "Rbbp5",
+                                       "Men1","Psip1", "Hoxa9"),
+                   as_plotly = FALSE)
+
+plot_factor_jitter(eff,
+                   factor = "Factor_1",
+                   clamp = 3, 
+                   highlight_genes = c("Ash2l", "Rbbp5",
+                                       "Men1","Psip1", "Hoxa9"))
+
+
+
+```
+
+## Myc-Myb profile
+
+```{r}
+# plot one guide Myc.1 across all factors
+plot_perturbation_profile(eff,
+                          perturbation = "Myc.1")
+
+# plot Myc-Max and Myb-Msi2 across all factors
+MycMyb_colours <- c(
+  Myc  = "#8B0000",   
+  Max  = "#FF0000", 
+  Myb  = "#00008B", 
+  Msi2 = "#ADD8E9"  
+)
+MycMyb_profile <- plot_perturbation_profile_gene(eff,
+                               perturbed_genes = c("Myc","Max","Myb","Msi2"),
+                               exclude_factors = c("Factor_7","Factor_10"),
+                               min_sig_per_factor = 2,
+                               auto_exclude_nonsig = TRUE, 
+                               gene_colors = MycMyb_colours)
+MycMyb_profile
+# with non-significant points greyed out
+MycMyb_profile_grey <- plot_perturbation_profile_gene_grey(eff,
+                               perturbed_genes = c("Myc","Max","Myb","Msi2"),
+                               exclude_factors = c("Factor_7","Factor_10",
+                                                   "Factor_1","Factor_2","Factor_3","Factor_4","Factor_6",
+                                                   "Factor_15",
+                                                   "Factor_17","Factor_19","Factor_21"),
+                               min_sig_per_factor = 1,
+                               auto_exclude_nonsig = FALSE, 
+                               gene_colors = MycMyb_colours,
+                               factor_order = c("Factor_8", "Factor_11","Factor_20",
+                                                "Factor_9","Factor_14","Factor_18",
+                                                "Factor_5","Factor_13","Factor_12","Factor_16"))
+MycMyb_profile_grey
+```
+
+```{r, eval=FALSE}
+ggsave( filename = "manuscript/fig2/MycMyb_profile.pdf",
+        plot     = MycMyb_profile,
+        width    = 6,
+        height   = 6,
+        units    = "in"
+        )
+
+ggsave( filename = "manuscript/fig2/MycMyb_profile_grey.pdf",
+        plot     = MycMyb_profile_grey,
+        width    = 6,
+        height   = 6,
+        units    = "in"
+        )
+
+ggsave( filename = "manuscript/fig2/MycMyb_profile_grey_shorter.pdf",
+        plot     = MycMyb_profile_grey,
+        width    = 6,
+        height   = 5,
+        units    = "in"
+        )
+
+```
+
+
+## SWI/SNF profile
+
+```{r}
+SWISNF_profile <- plot_perturbation_profile_gene(eff,
+                               perturbed_genes = c("Smarcc1","Smarcd2","Smarcd1","Brd9"),
+                               exclude_factors = c("Factor_7","Factor_10"),
+                               min_sig_per_factor = 2,
+                               auto_exclude_nonsig = TRUE, 
+                               gene_colors = c(
+                                 Smarcc1  = "chartreuse4",
+                                 Smarcd2  = "palegreen2",
+                                 Smarcd1  = "sienna3",
+                                 Brd9 = "sienna1" ))
+SWISNF_profile
+```
+
+```{r, eval=FALSE}
+ggsave( filename = "manuscript/fig2/SWISNF_profile.pdf",
+        plot     = SWISNF_profile,
+        width    = 6,
+        height   = 6,
+        units    = "in"
+        )
+```
+
+## Ash2l-Rbbp5 profile
+
+```{r}
+Ash2l_Rbbp5_profile <- plot_perturbation_profile_gene(eff,
+                               perturbed_genes = c("Ash2l","Rbbp5"),
+                               exclude_factors = c("Factor_7","Factor_10"),
+                               auto_exclude_nonsig = TRUE, 
+                              min_sig_per_factor = 2,
+                               gene_colors = c(
+                                 Ash2l  = "slateblue4",
+                                 Rbbp5  = "blueviolet" ))
+Ash2l_Rbbp5_profile
+```
+
+```{r, eval=FALSE}
+ggsave( filename = "manuscript/fig2/Ash2l_Rbbp5_profile.pdf",
+        plot     = Ash2l_Rbbp5_profile,
+        width    = 6,
+        height   = 6,
+        units    = "in"
+        )
+```
+
+# Session info
+
+```{r}
+sessionInfo()
+```
+
+

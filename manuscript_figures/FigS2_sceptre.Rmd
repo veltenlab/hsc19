@@ -1,0 +1,1054 @@
+---
+title: "Make plots for SCEPTRE DE (Figure S2)"
+author: "Joe Bowness"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+params:
+  rmd: "FigS2_CRISPRi500_sceptre"
+abstract: To run the sceptre analyses see clean_analysis/sceptre. First I needed to make appropriate input files (from the CRISPRi500 seurat objects) with the script "make_sceptre_ondisc_objects_cluster_filterNT.R". Then actually run sceptre with "run_sceptre_cluster_ondisc_object.R". I later repeated the process to run differential expression on a per-guide basis (to approximately quantify consistency between guides). 
+output_dir: "/users/lvelten/jbowness/CRISPRi500/HSC/clean_analysis/manuscript/"
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+    code_folding: hide
+    toc_depth: 4
+    toc_float:
+      collapsed: false
+    highlight: pygments
+editor_options:
+  
+  chunk_output_type: console
+---
+## Required packages
+
+```{r, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(Seurat)
+library(sceptre)
+library(tidyr)
+library(VennDiagram)
+library(gridExtra)
+library(ondisc)
+library(plotly)
+library(htmlwidgets)
+
+```
+
+# Load sceptre files
+
+```{r}
+## Load outputs from sceptre 
+path_to_sceptre_objects <- "/users/lvelten/jbowness/CRISPRi500/HSC/clean_analysis/sceptre/sceptre_objects"
+sceptre_files <- list.files(path_to_sceptre_objects, pattern = "\\.rds$", full.names = TRUE)
+sceptre_files <- sceptre_files[
+  sceptre_files != "/users/lvelten/jbowness/CRISPRi500/HSC/clean_analysis/sceptre/sceptre_objects/CRISPRi500_HSC_Rep1_Rem_rmNT12_byguide_default.rds"
+]
+sceptre_files <- sceptre_files[!grepl("Rep2", sceptre_files)]
+
+for (f in sceptre_files) {
+  nm <- tools::file_path_sans_ext(basename(f))
+  e  <- new.env(parent = emptyenv())
+  load(f, envir = e)
+  message(nm)
+  base::assign(x = nm, value = e[[ls(e)[1]]], envir = .GlobalEnv)
+}
+```
+
+```{r}
+## Load DE results (default settings)
+path_to_sceptre_de_results <- "/users/lvelten/jbowness/CRISPRi500/HSC/clean_analysis/sceptre/de_tests"
+
+Rep1_5X_sceptre_de <- read_csv(file.path(path_to_sceptre_de_results, "CRISPRi500_HSC_Rep1_5X_rmNT10_default.csv"))
+Rep1_5X_sceptre_de <- Rep1_5X_sceptre_de %>% select(-"fold_change", -"se_fold_change")
+
+Rep1_Rem_sceptre_de <- read_csv(file.path(path_to_sceptre_de_results, "CRISPRi500_HSC_Rep1_Rem_rmNT12_default.csv"))
+Rep1_Rem_sceptre_de <- Rep1_Rem_sceptre_de %>% select(-"fold_change", -"se_fold_change")
+
+# Rep 2 (only 5X genes)
+Rep2_5X_sceptre_de <- read_csv(file.path(path_to_sceptre_de_results, "CRISPRi500_HSC_Rep2_5X_default.csv"))
+
+```
+
+# Sceptre plots
+
+## Function to summarise num DE genes
+
+```{r}
+de_sum_cal_disc <- function(sceptre_obj, replicate, genes, covs, rmNT, cal_disc) {
+  if(cal_disc == "cal"){
+  #summarise number of significant DE genes per target
+  df <- sceptre_obj@calibration_result %>%
+    group_by(grna_target) %>%
+    summarize(count = sum(significant == TRUE), 
+              .groups = "keep")
+  }
+  else {
+    df <- sceptre_obj@discovery_result %>%
+      na.omit() %>%
+      group_by(grna_target) %>%
+      summarize(count = sum(significant == TRUE), 
+                .groups = "keep")
+    }
+  #add additional description columns
+  df$replicate <- replicate
+  df$genes <- genes
+  df$rmNT <- rmNT
+  df$covs <- covs
+  df$cal_disc <- cal_disc
+  return(df)
+}
+```
+
+## Add summaries of DE genes to larger output file
+
+```{r}
+de_sum_Rep1 <- data.frame(
+  "grna_target" = character(), "count" = numeric(),
+  "replicate" = character(), "genes" = character(), "rmNT" = character(),
+  "covs" = character(), "cal_disc" = character(),
+    stringsAsFactors = FALSE
+)
+
+for (f in sceptre_files) {
+   # extract information from file name
+   base <- tools::file_path_sans_ext(basename(f))
+   message(base)
+   m <- regexec("^CRISPRi500_HSC_(Rep\\d+)_([A-Za-z0-9]+)(?:_(rmNT\\d+))?_(default|\\dPC)$", base)
+   g <- regmatches(base, m)[[1]]
+   rep   <- g[2]                                    # e.g., "Rep1"
+   rem5X <- g[3]                                  # "5X" or "Rem"
+   rmNT  <- if (length(g) >= 4 && !is.na(g[4]) && nzchar(g[4])) g[4] else NA_character_  # e.g., "rmNT10"
+   covs <- g[5]                                # "default" | "2PC" | "3PC"
+   
+   # get X5 instead of 5X
+   remX5 <- if (rem5X == "5X") "X5" else rem5X
+   # get default, PC2 or PC3
+   if (covs == "default") {
+      covs <- "def"
+    } else {
+      covs <- sub("^(\\d)PC$", "PC\\1", covs)
+    }
+   
+   obj <- get(base, envir = .GlobalEnv)
+   
+   # collect calibration results
+   out <- de_sum_cal_disc(sceptre_obj = obj, 
+                   replicate = rep, 
+                   genes = rem5X, 
+                   covs = covs, 
+                   rmNT = rmNT, 
+                   cal_disc = "cal")
+   
+   # (OPTIONAL) save to separate output file
+    #var_nm <- paste0(
+    #  "de_sum_", rem5X, "_", rep, "_", covs,
+    #  if (!is.na(rmNT)) paste0("_", rmNT),
+    #  "_cal")
+   #assign(var_nm, out, envir = .GlobalEnv)
+   
+   # add to overall results table
+   de_sum_Rep1 <- rbind(de_sum_Rep1, out)
+   
+   # collect discovery results and add to results
+   out <- de_sum_cal_disc(sceptre_obj = obj, 
+                   replicate = rep, 
+                   genes = rem5X, 
+                   covs = covs, 
+                   rmNT = rmNT, 
+                   cal_disc = "disc")
+   de_sum_Rep1 <- rbind(de_sum_Rep1, out)
+   }
+
+## add hasNT column
+de_sum_Rep1 <- de_sum_Rep1 %>%
+  mutate(has_NT = grepl("NO-SITE-sgRNA-12", grna_target, fixed = TRUE) | 
+           grepl("NO-SITE-sgRNA-10", grna_target, fixed = TRUE))
+
+```
+
+## Plot violin plots of false discoveries 
+
+```{r}
+false_pos_violins <- subset(de_sum_Rep1, cal_disc == "cal" & replicate == "Rep1") %>%
+  ggplot(aes(x = covs, y = count, fill = covs)) +
+  geom_violin(trim = TRUE, alpha = 0.6) +
+  geom_boxplot(width = 0.1, position = position_dodge(width = 0.8),  alpha = 0.8) +  
+  geom_jitter(aes(color = has_NT), width = 0, shape = 16, size = 2, alpha = 0.6) +
+  scale_color_manual(values = c(`TRUE` = "red", `FALSE` = "darkgrey")) +
+  labs(  x = "covariate model",
+    y = "number of false positives per NT group",
+    color = "Group contains NT10 or NT12") +
+   guides(fill = "none") +
+  scale_y_continuous(trans = 'log1p', breaks = c(0, 1, 5, 10, 50, 100, 150))+
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set3") +
+  facet_wrap(~ genes + rmNT, nrow = 2)
+false_pos_violins
+```
+
+### only default settings (no covariates)
+
+```{r}
+de_sum_Rep1_filtered <- subset(de_sum_Rep1, cal_disc == "cal" & covs == "def" & replicate == "Rep1")
+de_sum_Rep1_filtered <- de_sum_Rep1_filtered %>%
+  mutate(
+    rmNT = case_when(
+      rmNT %in% c("rmNT10", "rmNT12") ~ "rmNT",
+      is.na(rmNT) ~ "incNT",
+      TRUE ~ rmNT
+    )
+  )
+
+false_pos_violin_def <- ggplot(de_sum_Rep1_filtered, aes(x = genes, y = count, fill = rmNT)) +
+  geom_violin(trim = TRUE, alpha = 0.6) +
+  geom_boxplot(width = 0.1, position = position_dodge(width = 0.8),  alpha = 0.8) +  
+  geom_jitter(aes(color = has_NT), width = 0, shape = 16, size = 2, alpha = 0.6) +
+  scale_color_manual(values = c(`TRUE` = "red", `FALSE` = "darkgrey")) +
+  labs(  x = "include or remove NT10/N12",
+    y = "number of false positives per NT group",
+    color = "Group contains NT10 or NT12") +
+   guides(fill = "none") +
+  scale_y_continuous(trans = 'log1p', breaks = c(0, 1, 5, 10, 50, 100, 150))+
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set3") +
+  facet_wrap(~ rmNT, nrow = 1, drop=TRUE)
+false_pos_violin_def
+
+```
+
+```{r, eval=FALSE}
+# save plot
+ggsave( filename = "manuscript/figs/sceptre_calibration_violin_false_pos.pdf",
+        plot     = false_pos_violin_def,
+        width    = 8,
+        height   = 5,
+        units    = "in"
+        )
+```
+
+
+## Plot of total DE genes
+
+```{r}
+# summarise total DE genes
+de_sum_Rep1_total <- de_sum_Rep1 %>%
+  group_by(genes, rmNT, covs, cal_disc) %>%
+  summarize(total_DE = sum(count), .groups = "drop")
+
+# Set factors so NAs on the left
+de_sum_Rep1_total$rmNT <- as.character(de_sum_Rep1_total$rmNT)   
+de_sum_Rep1_total$rmNT[is.na(de_sum_Rep1_total$rmNT)] <- "NA" 
+de_sum_Rep1_total$rmNT <- factor(de_sum_Rep1_total$rmNT,
+                                 levels = c("NA", "rmNT10", "rmNT12"))
+
+## split X5 and Rem
+df_X5  <- filter(de_sum_Rep1_total, genes == "5X")
+df_Rem <- filter(de_sum_Rep1_total, genes == "Rem")
+
+## plotting function
+plot_by_genes <- function(df, title = NULL) {
+  ggplot(df, aes(x = covs, y = total_DE, fill = cal_disc)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    facet_wrap(~ rmNT, scales = "fixed", drop = TRUE) +
+    labs(title = title, x = "Covariates", y = "Total DE genes") +
+    theme_minimal()
+}
+
+## make plots
+p_X5  <- plot_by_genes(df_X5,  "Total DE for targets at 5X ")
+p_Rem <- plot_by_genes(df_Rem, "Total DE for remaining targets")
+
+p_X5
+p_Rem
+```
+
+### total DE genes for only default settings 
+
+```{r}
+## plotting function
+plot_by_genes_def <- function(df, title = NULL) {
+  df %>% subset(covs == "def") %>%
+  ggplot(aes(x = covs, y = total_DE, fill = cal_disc)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    geom_text(
+      aes(label = total_DE),
+      position = position_dodge(width = 0.9),
+      vjust = -0.3,
+      size = 3) +
+    facet_wrap(~ rmNT, scales = "fixed", drop = TRUE) +
+    labs(title = title, x = "Covariates", y = "Total DE genes") +
+    theme_minimal()
+}
+
+## make plots
+p_X5_def  <- plot_by_genes_def(df_X5,  "Total DE for targets at 5X ")
+p_Rem_def <- plot_by_genes_def(df_Rem, "Total DE for remaining targets")
+
+p_X5_def + p_Rem_def
+```
+
+```{r, eval=FALSE}
+# save plot
+ggsave( filename = "manuscript/figs/sceptre_calibration_bar_totalDE_5X.pdf",
+        plot     = p_X5_def,
+        width    = 4,
+        height   = 5,
+        units    = "in"
+        )
+ggsave( filename = "manuscript/figs/sceptre_calibration_bar_totalDE_Rem.pdf",
+        plot     = p_Rem_def,
+        width    = 4,
+        height   = 5,
+        units    = "in"
+        )
+```
+
+## How does cell number affect num of DE genes?
+
+```{r}
+## get cells per target gene for 5X genes ####
+obj <- CRISPRi500_HSC_Rep1_5X_rmNT10_default
+idxs <- obj@grna_assignments[["grna_group_idxs"]]
+num_cells <- vapply(idxs, length, integer(1))
+
+cells_per_target_5X <- data.frame(
+  grna_target = names(num_cells),
+  num_cells = unname(num_cells),
+  row.names = NULL,
+  stringsAsFactors = FALSE
+)
+
+# add this to the DE genes summary
+DE_per_target_5X <- subset(de_sum_Rep1,
+                        replicate == "Rep1" &
+                          genes == "5X" &
+                          !(is.na(rmNT)) &
+                          covs == "def" &
+                          cal_disc == "disc")
+DE_per_target_5X <- merge(DE_per_target_5X, cells_per_target_5X, by="grna_target")
+
+## get cells per target gene for Remaining genes ####
+obj <- CRISPRi500_HSC_Rep1_Rem_rmNT12_default
+idxs <- obj@grna_assignments[["grna_group_idxs"]]
+num_cells <- vapply(idxs, length, integer(1))
+
+cells_per_target_Rem <- data.frame(
+  grna_target = names(num_cells),
+  num_cells = unname(num_cells),
+  row.names = NULL,
+  stringsAsFactors = FALSE
+)
+
+# add this to the DE genes summary
+DE_per_target_Rem <- subset(de_sum_Rep1,
+                        replicate == "Rep1" &
+                          genes == "Rem" &
+                          !(is.na(rmNT)) &
+                          covs == "def" &
+                          cal_disc == "disc")
+DE_per_target_Rem <- merge(DE_per_target_Rem, cells_per_target_Rem, by="grna_target")
+
+## merge together and plot ####
+DE_per_target <- rbind(DE_per_target_5X, DE_per_target_Rem)
+
+# Compute Pearson correlation
+cor_val <- cor(DE_per_target$num_cells,
+               DE_per_target$count,
+               method = "pearson",
+               use = "complete.obs")
+
+scatter_ncells_DE <- ggplot(DE_per_target, 
+                            aes(x = num_cells, y = count)) +
+  geom_point(size = 2, alpha = 0.7) +
+  #geom_smooth(method = "lm", linewidth = 0.5, se = FALSE) +  
+  scale_x_continuous(trans = "log1p",
+                     breaks = c(0, 1, 5, 10, 20, 50, 100, 500, 1000),
+                     limits = c(1, NA),
+                     expand = c(0.1, 0)) + 
+  scale_y_continuous(trans = "log1p",
+                     breaks = c(0, 1, 5, 10, 20, 50, 100, 500, 1000),
+                     limits = c(1, NA),
+                     expand = c(0.1, 0)) +
+  labs(x = "Number of cells", y = "Number of DE genes discovered") +
+  theme_minimal() +
+  annotate("text",
+           x = Inf, y = Inf,
+           hjust = 1.1, vjust = 1.5,
+           label = paste0("R = ", round(cor_val, 2)),
+           size = 5) +
+  theme_minimal()
+
+scatter_ncells_DE
+
+```
+
+```{r, eval=FALSE}
+# save plot
+ggsave( filename = "manuscript/figs/scatter_ncells_DE.pdf",
+        plot     = scatter_ncells_DE,
+        width    = 6,
+        height   = 5,
+        units    = "in"
+        )
+```
+
+## Add consistency score to DE table
+
+```{r}
+## load 5X genes sceptre results (testing each guide RNA separately)
+CRISPRi500_HSC_Rep1_5X_rmNT10_byguide_default <- read_csv("/users/lvelten/jbowness/CRISPRi500/HSC/clean_analysis/sceptre/de_tests/CRISPRi500_HSC_Rep1_5X_rmNT10_byguide_default.csv")
+CRISPRi500_HSC_Rep1_5X_rmNT10_byguide_default <- CRISPRi500_HSC_Rep1_5X_rmNT10_byguide_default %>%
+  mutate(
+    grna_target = as.character(grna_target),
+    target_gene = sub("-CRISPRi-sgRNA-[0-9]+$", "", grna_target)
+  )
+
+# function to summarise guide consistency
+summarise_crispri_consistency <- function(df) {
+  eps_low  <- 1e-300
+  eps_high <- 1e-16
+  
+  # ---- base summary per (response_id, grna_target) ----
+  base_summary <- na.omit(df) %>%
+    dplyr::group_by(response_id, target_gene) %>%
+    dplyr::summarise(
+      n_guides   = sum(!is.na(log_2_fold_change)),
+      mean_log2FC = mean(log_2_fold_change, na.rm = TRUE),
+      sd_log2FC   = sd(log_2_fold_change,   na.rm = TRUE),
+      sign_agreement = {
+        m <- mean(log_2_fold_change, na.rm = TRUE)
+        mean(sign(log_2_fold_change) == sign(m), na.rm = TRUE)
+      },
+      
+      mean_neglog10p = mean(-log10(pmax(p_value, .Machine$double.xmin)), na.rm = TRUE),
+      
+      # ---- Stouffer's Z meta-analysis ----
+      z = {
+        p_clamped <- pmin(pmax(p_value, eps_low), 1 - eps_high)
+        z_i <- sign(log_2_fold_change) * qnorm(1 - p_clamped / 2)
+        z_i <- pmax(pmin(z_i, 8), -8)  # optional winsorization
+        sum(z_i, na.rm = TRUE) / sqrt(sum(!is.na(z_i)))
+      },
+      p_meta = 2 * (1 - stats::pnorm(abs(z))),
+      .groups = "drop"
+    ) %>%
+    dplyr::mutate(
+      # binomial weighting of sign agreement sqrt(n_guides)
+      sd_log2FC = ifelse(is.na(sd_log2FC), 0, sd_log2FC),
+      consistency_score = (sign_agreement * sqrt(n_guides)) * mean_neglog10p / (1 + sd_log2FC) 
+    ) %>%
+    dplyr::mutate(
+      p_meta_adj = p.adjust(p_meta, method = "BH")
+    )
+
+  
+  # ---- extract guide index from grna_target and pivot to wide ----
+  wide_guides <- df %>%
+    dplyr::mutate(
+      grna_target = as.character(grna_target),
+      guide_num = suppressWarnings(as.integer(sub(".*-CRISPRi-sgRNA-","", grna_target)))
+    ) %>%
+    dplyr::filter(!is.na(guide_num), guide_num %in% 1:3) %>%
+    dplyr::group_by(response_id, target_gene, guide_num) %>%
+    dplyr::summarise(
+      log2FC = dplyr::first(log_2_fold_change),
+      p     = dplyr::first(p_value),
+      n_nonzero_trt = dplyr::first(n_nonzero_trt),
+      .groups = "drop"
+    ) %>%
+    tidyr::pivot_wider(
+      names_from  = guide_num,
+      values_from = c(log2FC, p, n_nonzero_trt),
+      names_glue  = "{.value}_g{guide_num}"
+    )
+
+  # ---- final join ----
+  result <- base_summary %>%
+    dplyr::left_join(wide_guides, by = c("response_id","target_gene"))
+  
+  return(result)
+}
+
+
+consistency_summary <- summarise_crispri_consistency(
+  CRISPRi500_HSC_Rep1_5X_rmNT10_byguide_default
+)
+
+Rep1_5X_sceptre_de_ext <- Rep1_5X_sceptre_de %>%
+  rename("target_gene" = "grna_target") %>%
+    dplyr::left_join(consistency_summary, by = c("response_id","target_gene"))
+
+write_csv(Rep1_5X_sceptre_de_ext, 
+          "/users/lvelten/jbowness/CRISPRi500/HSC/clean_analysis/manuscript/int_files/Rep1_5X_sceptre_de_ext.csv")
+
+```
+
+## Repeat for remaining genes
+
+```{r, eval=FALSE}
+# Load DE from remaining genes
+CRISPRi500_HSC_Rep1_Rem_rmNT12_byguide_default <- read_csv("/users/lvelten/jbowness/CRISPRi500/HSC/clean_analysis/sceptre/de_tests/CRISPRi500_HSC_Rep1_Rem_rmNT12_byguide_default.csv")
+CRISPRi500_HSC_Rep1_Rem_rmNT12_byguide_default <- CRISPRi500_HSC_Rep1_Rem_rmNT12_byguide_default %>%
+  mutate(
+    grna_target = as.character(grna_target),
+    target_gene = sub("-CRISPRi-sgRNA-[0-9]+$", "", grna_target)
+  )
+
+consistency_summary_rem <- summarise_crispri_consistency(
+  CRISPRi500_HSC_Rep1_Rem_rmNT12_byguide_default
+)
+
+Rep1_Rem_sceptre_de_ext <- Rep1_Rem_sceptre_de %>%
+  rename("target_gene" = "grna_target") %>%
+    dplyr::left_join(consistency_summary_rem, by = c("response_id","target_gene"))
+
+write_csv(Rep1_Rem_sceptre_de_ext, 
+          "/users/lvelten/jbowness/CRISPRi500/HSC/clean_analysis/manuscript/int_files/Rep1_Rem_sceptre_de_ext.csv")
+
+```
+
+# Volcano plots for some example genes
+
+```{r}
+# function to plot volcano plot
+plot.volcano <- function(de_df, gene, label_pval, label_log2,
+                         alpha_min = 0.1, alpha_max = 1.0,
+                         meta_thresh = 0.05) {
+
+  # safe -log10(p)
+  de_df$neg_log10_pval <- pmin(-log10(pmax(de_df$p_value, .Machine$double.xmin)), 10)
+
+  # subset
+  de_df_gene <- subset(de_df, target_gene == gene & pass_qc == "TRUE")
+
+  # labels
+  de_df_gene$label <- ifelse(
+    de_df_gene$neg_log10_pval > label_pval |
+      abs(de_df_gene$log_2_fold_change) > label_log2,
+    de_df_gene$response_id, ""
+  )
+  ## --- scaling helper ---
+  rescale_safe <- function(x, out_min, out_max) {
+    if (all(is.na(x))) return(rep(out_min, length(x)))
+    x[!is.finite(x)] <- NA
+    rng <- range(x, na.rm = TRUE)
+    if (diff(rng) == 0) return(rep(out_max, length(x)))
+    x_scaled <- (x - rng[1]) / diff(rng)
+    x_scaled[is.na(x_scaled)] <- 0
+    out_min + x_scaled * (out_max - out_min)
+  }
+  
+  # scale alpha by |z|
+  de_df_gene$alpha_pt <- rescale_safe(abs(de_df_gene$z), alpha_min, alpha_max)
+
+  # robust logical for 'significant' (handles TRUE/FALSE or "TRUE"/"FALSE")
+  sig <- if (is.logical(de_df_gene$significant)) {
+    de_df_gene$significant
+  } else {
+    toupper(as.character(de_df_gene$significant)) == "TRUE"
+  }
+
+  # color grouping
+  de_df_gene$color_grp <- dplyr::case_when(
+    !sig ~ "ns",  # not significant
+    sig & de_df_gene$log_2_fold_change > 0 & de_df_gene$p_meta_adj <= meta_thresh ~ "up_strong",
+    sig & de_df_gene$log_2_fold_change > 0 & de_df_gene$p_meta_adj > meta_thresh ~ "up_weak",
+    sig & de_df_gene$log_2_fold_change < 0 & de_df_gene$p_meta_adj <= meta_thresh ~ "down_strong",
+    sig & de_df_gene$log_2_fold_change < 0 & de_df_gene$p_meta_adj > meta_thresh ~ "down_weak",
+    TRUE ~ "ns"
+  )
+  
+  # palette
+  cols <- c(
+    ns          = "grey70",
+    up_weak     = "#e88484",  # light red
+    up_strong   = "#b80707",  # dark red
+    down_weak   = "#42a1f5",  # light blue
+    down_strong = "#0D47A1"   # dark blue
+  )
+
+  plot_title <- paste("Volcano plot -", gene)
+
+  p <- ggplot(de_df_gene, aes(x = log_2_fold_change, y = neg_log10_pval)) +
+    geom_point(
+      aes(text = response_id, color = color_grp, alpha = alpha_pt)
+    ) +
+    scale_color_manual(values = cols, name = "Significance") +
+    scale_alpha_identity() +
+    geom_text(aes(label = label), vjust = -0.5, hjust = 0.5, size = 3, check_overlap = FALSE) +
+    labs(x = "Log2 Fold Change", y = "-log10(P-value)", title = plot_title) +
+    theme_minimal()
+
+  return(p)
+}
+
+# plot volcanos
+#Msi2_volcano <- plot.volcano(Rep1_Rem_sceptre_de_ext, "Msi2", 4, 1.4)
+#Msi2_volcano
+
+Runx1_volcano <- plot.volcano(Rep1_5X_sceptre_de_ext, "Runx1", label_pval = 6, label_log2 = 1.2)
+Runx1_volcano
+
+# check overlap between significance and p_meta_adj
+Rep1_5X_sceptre_de_ext %>%
+  subset(target_gene == "Runx1") %>%
+  summarise(
+    n_total      = n(),
+    n_signif     = sum(significant == TRUE, na.rm = TRUE),
+    n_meta       = sum(p_meta_adj < 0.05, na.rm = TRUE),
+    n_overlap    = sum(significant == TRUE & p_meta_adj < 0.05, na.rm = TRUE),
+    prop_overlap = n_overlap / n_signif
+    )
+```
+
+## plotly volcano
+
+```{r}
+plot.volcano.plotly <- function(de_df, gene,
+                                meta_thresh = 0.05) {
+  stopifnot(all(c("target_gene","pass_qc","p_value","response_id",
+                  "log_2_fold_change","significant","p_meta_adj",
+                  "consistency_score","z") %in% names(de_df)))
+
+  # safe -log10(p)
+  de_df <- de_df %>%
+    mutate(neg_log10_pval = pmin(-log10(pmax(p_value, .Machine$double.xmin)), 10))
+
+  # subset to this gene and QC-passing rows
+  de_df_gene <- subset(de_df, target_gene == gene & pass_qc == "TRUE")
+
+  # scale alpha by |z|
+  alpha_from_z <- function(z, alpha_min = 0.05, alpha_max = 1) {
+  z_abs <- abs(z)
+  z_abs[!is.finite(z_abs)] <- NA
+
+  # logistic parameters: shape tuned to hit ~|z|=1→0.2, |z|=2→0.6, |z|=10→1
+  k <- 0.9   # shallower slope (gentler rise)
+  c <- 3.5   # midpoint around z = 2
+  scaled <- 1 / (1 + exp(-k * (z_abs - c)))
+
+  # normalize so that |z| = 10 saturates at 1
+  scaled <- pmin(scaled / (1 / (1 + exp(-k * (10 - c)))), 1)
+
+  scaled[is.na(scaled)] <- 0
+  alpha_min + scaled * (alpha_max - alpha_min)
+  }
+  de_df_gene$alpha_pt <- alpha_from_z(de_df_gene$z)
+
+
+  # robust logical for 'significant'
+  sig <- if (is.logical(de_df_gene$significant)) de_df_gene$significant
+         else toupper(as.character(de_df_gene$significant)) == "TRUE"
+
+  # color groups (keep ns grey)
+  de_df_gene$color_grp <- dplyr::case_when(
+    !sig ~ "ns",
+    sig & de_df_gene$log_2_fold_change > 0 & de_df_gene$p_meta_adj <= meta_thresh ~ "up_strong",
+    sig & de_df_gene$log_2_fold_change > 0 & de_df_gene$p_meta_adj >  meta_thresh ~ "up_weak",
+    sig & de_df_gene$log_2_fold_change < 0 & de_df_gene$p_meta_adj <= meta_thresh ~ "down_strong",
+    sig & de_df_gene$log_2_fold_change < 0 & de_df_gene$p_meta_adj >  meta_thresh ~ "down_weak",
+    TRUE ~ "ns"
+  )
+
+  # base hex colors per group
+  base_cols <- c(
+    ns          = "#B3B3B3",  # grey70
+    up_weak     = "#e88484",  # light red
+    up_strong   = "#b80707",  # dark red
+    down_weak   = "#42a1f5",  # light blue
+    down_strong = "#0D47A1"   # dark blue
+  )
+
+  # helper: hex -> rgba with per-point alpha
+  hex_to_rgba <- function(hex, alpha_vec) {
+    # strip '#', parse
+    hex <- gsub("#","", hex)
+    r <- strtoi(substr(hex,1,2),16L)
+    g <- strtoi(substr(hex,3,4),16L)
+    b <- strtoi(substr(hex,5,6),16L)
+    paste0("rgba(", r, ",", g, ",", b, ",", pmin(pmax(alpha_vec, 0), 1), ")")
+  }
+
+  # ensure ordered legend
+  grp_levels <- c("ns","up_weak","up_strong","down_weak","down_strong")
+  de_df_gene$color_grp <- factor(de_df_gene$color_grp, levels = grp_levels)
+
+  plt <- plot_ly()
+  for (grp in grp_levels) {
+    d <- de_df_gene %>% filter(color_grp == grp)
+    if (nrow(d) == 0) next
+
+    # rgba colors with individual alpha
+    col_rgba <- hex_to_rgba(base_cols[[grp]], d$alpha_pt)
+    
+    # collapse per-guide logFCs, comma-separated
+    fc_str <- apply(d[, c("log2FC_g1","log2FC_g2","log2FC_g3")], 1, function(x) {
+      paste(na.omit(signif(x, 3)), collapse = ", ")
+    })
+
+    # tooltip:
+    hover_txt <- paste0(
+     "<b>", d$response_id, "</b> ",
+      "<br>log2FC: ", signif(d$log_2_fold_change, 3),
+      "<br>n_guides_pass_qc: ", d$n_guides,
+      "<br>log2FC_guides: ", fc_str,
+      "<br>consistency_score: ", signif(d$consistency_score, 3)   )
+
+    plt <- add_trace(
+      plt,
+      type = "scattergl",
+      mode = "markers",
+      data = d,
+      x = ~log_2_fold_change,
+      y = ~neg_log10_pval,
+      name = grp,
+      text = hover_txt,
+      hoverinfo = "text",
+      marker = list(
+        color = col_rgba,
+        size  = 8,          # tweak if you want larger/smaller points
+        line  = list(width = 0)
+      ),
+      showlegend = TRUE
+    )
+  }
+
+  plot_title <- paste("Volcano plot -", gene)
+
+  plt %>%
+    layout(
+      title = list(text = plot_title),
+      xaxis = list(title = "Log2 Fold Change", zeroline = FALSE),
+      yaxis = list(title = "-log10(P-value)", zeroline = FALSE),
+      legend = list(title = list(text = NULL))
+    )
+}
+plot.volcano.plotly(Rep1_5X_sceptre_de_ext, "Runx1")
+```
+
+## loop and save volcano plots
+
+```{r, eval=FALSE}
+# create folder if not already present
+out_dir <- "manuscript/de_volcanos_5X"
+if (!dir.exists(out_dir)) dir.create(out_dir)
+
+# get all unique target genes
+genes <- unique(Rep1_5X_sceptre_de_ext$target_gene)
+
+# loop through and save one volcano plot per gene
+for (g in genes) {
+  cat("Saving volcano for:", g, "\n")
+  p <- plot.volcano.plotly(de_df = Rep1_5X_sceptre_de_ext, gene = g)
+  
+  # shrink dependencies to only what's needed (e.g., scattergl)
+  p <- plotly::partial_bundle(p)
+  
+  safe_name <- gsub("[^A-Za-z0-9_\\-]", "_", g)
+  file_path <- file.path(out_dir, paste0("de_volcano_", safe_name, ".html"))
+
+  #  build .html filename
+  tmpfile <- tempfile(fileext = ".html")
+  htmlwidgets::saveWidget(p, file = tmpfile, selfcontained = TRUE, libdir = NULL)
+
+  # copy the fully inlined html into your final path
+  txt <- readChar(tmpfile, file.info(tmpfile)$size, useBytes = TRUE)
+  writeLines(txt, con = file_path, useBytes = TRUE)
+}
+
+```
+
+## loop and save volcanos for remaining genes
+
+```{r, eval=FALSE}
+# create folder if not already present
+out_dir <- "manuscript/de_volcanos_remaining"
+if (!dir.exists(out_dir)) dir.create(out_dir)
+
+# get all unique target genes
+genes <- unique(Rep1_Rem_sceptre_de_ext$target_gene)
+
+# loop through and save one volcano plot per gene
+for (g in genes) {
+  cat("Saving volcano for:", g, "\n")
+  p <- plot.volcano.plotly(de_df = Rep1_Rem_sceptre_de_ext, gene = g)
+  
+  # shrink dependencies to only what's needed (e.g., scattergl)
+  p <- plotly::partial_bundle(p)
+  
+  safe_name <- gsub("[^A-Za-z0-9_\\-]", "_", g)
+  file_path <- file.path(out_dir, paste0("de_volcano_", safe_name, ".html"))
+
+  #  build .html filename
+  tmpfile <- tempfile(fileext = ".html")
+  htmlwidgets::saveWidget(p, file = tmpfile, selfcontained = TRUE, libdir = NULL)
+
+  # copy the fully inlined html into your final path
+  txt <- readChar(tmpfile, file.info(tmpfile)$size, useBytes = TRUE)
+  writeLines(txt, con = file_path, useBytes = TRUE)
+}
+```
+
+# Concordance with replicate 2
+
+```{r}
+# test what happens to overlap coefficient with 2 or 3 PCs in sceptre model
+## 2PCs
+#Rep1_5X_sceptre_de <- read_csv(file.path(path_to_sceptre_de_results, "CRISPRi500_HSC_Rep1_5X_rmNT10_2PC.csv"))
+#Rep2_5X_sceptre_de <- read_csv(file.path(path_to_sceptre_de_results, "CRISPRi500_HSC_Rep2_5X_2PC.csv"))
+## 3 PCS
+#Rep1_5X_sceptre_de <- read_csv(file.path(path_to_sceptre_de_results, "CRISPRi500_HSC_Rep1_5X_rmNT10_3PC.csv"))
+#Rep2_5X_sceptre_de <- read_csv(file.path(path_to_sceptre_de_results, "CRISPRi500_HSC_Rep2_5X_3PC.csv"))
+
+```
+
+```{r}
+#subset DE results dfs to the same grna_target and reponse_id
+Rep1_5X_sceptre_de <- subset(Rep1_5X_sceptre_de, 
+                          Rep1_5X_sceptre_de$response_id %in% Rep2_5X_sceptre_de$response_id &
+                            Rep1_5X_sceptre_de$grna_target %in% Rep2_5X_sceptre_de$grna_target) 
+Rep2_5X_sceptre_de <- subset(Rep2_5X_sceptre_de, 
+                          Rep2_5X_sceptre_de$response_id %in% Rep1_5X_sceptre_de$response_id &
+                            Rep2_5X_sceptre_de$grna_target %in% Rep1_5X_sceptre_de$grna_target) 
+
+Rep1_5X_sceptre_de$replicate <- "Rep1"
+Rep2_5X_sceptre_de$replicate <- "Rep2"
+sceptre_5X_combined <- rbind(Rep1_5X_sceptre_de, Rep2_5X_sceptre_de)
+
+
+#plots for individual perturbations
+plot_replicate_agreement <- function(sceptre_obj, gene){
+  gene_sceptre <- subset(sceptre_obj, grna_target == gene)
+  # 1) Prepare data
+  plot_df <- gene_sceptre %>%
+  select(response_id, replicate, log2 = log_2_fold_change, significant) %>%
+  filter(!is.na(log2)) %>%
+  pivot_wider(
+    names_from  = replicate,
+    values_from = c(log2, significant),
+    names_sep   = "_"
+  ) %>%
+  filter(!is.na(log2_Rep1) & !is.na(log2_Rep2)) %>%
+  mutate(
+    category = case_when(
+      significant_Rep1 & significant_Rep2        ~ "both",
+      xor(significant_Rep1, significant_Rep2)    ~ "one",
+      TRUE                                        ~ "none"
+    ),
+    color_group = case_when(
+      # both sig & both positive
+      category=="both" & log2_Rep1>0  & log2_Rep2>0  ~ "both_pos",
+      # one sig & that sig rep is positive
+      category=="one"  & ((significant_Rep1 & !significant_Rep2 & log2_Rep1>0) |
+                          (significant_Rep2 & !significant_Rep1 & log2_Rep2>0)) ~ "one_pos",
+      # both sig & both negative
+      category=="both" & log2_Rep1<0  & log2_Rep2<0  ~ "both_neg",
+      # one sig & that sig rep is negative
+      category=="one"  & ((significant_Rep1 & !significant_Rep2 & log2_Rep1<0) |
+                          (significant_Rep2 & !significant_Rep1 & log2_Rep2<0)) ~ "one_neg",
+      # everything else
+      TRUE                                        ~ "other"
+    )
+  )
+  # 2) Pearson correlation for annotation
+  ct         <- cor.test(plot_df$log2_Rep1, plot_df$log2_Rep2, method="pearson", exact=FALSE)
+  r_val      <- signif(ct$estimate, 3)
+  corr_label <- paste0("Pearson R = ", r_val)
+  # 3) Scatter plot with layered coloring
+  scatter_plot <- ggplot() +
+  # "other" (not sig in either OR mixed-sign)
+  geom_point(data = filter(plot_df, color_group=="other"),
+             aes(x = log2_Rep1, y = log2_Rep2),
+             color = "grey70", alpha = 0.6) +
+  # one sig, negative
+  geom_point(data = filter(plot_df, color_group=="one_neg"),
+             aes(x = log2_Rep1, y = log2_Rep2),
+             color = "skyblue", alpha = 0.8) +
+  # both sig, negative
+  geom_point(data = filter(plot_df, color_group=="both_neg"),
+             aes(x = log2_Rep1, y = log2_Rep2),
+             color = "blue2", alpha = 0.9) +
+  # one sig, positive
+  geom_point(data = filter(plot_df, color_group=="one_pos"),
+             aes(x = log2_Rep1, y = log2_Rep2),
+             color = "firebrick2", alpha = 0.8) +
+  # both sig, positive
+  geom_point(data = filter(plot_df, color_group=="both_pos"),
+             aes(x = log2_Rep1, y = log2_Rep2),
+             color = "firebrick4", alpha = 0.9) +
+  # identity line
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  coord_equal() +
+  labs(x     = "Rep1 log2FC",
+       y     = "Rep2 log2FC"  ) +
+    ggtitle(paste(gene,": replicate comparison")) +
+  theme_minimal()
+  
+  ##### PLOT VENN DIAGRAMS
+  # 1) Compute sets of DE genes for Rep1 and Rep2, separately for up/down
+  sig1_up   <- gene_sceptre %>%
+    filter(replicate=="Rep1", significant, log_2_fold_change > 0) %>%
+    pull(response_id) %>% unique()
+  sig2_up   <- gene_sceptre %>%
+    filter(replicate=="Rep2", significant, log_2_fold_change > 0) %>%
+    pull(response_id) %>% unique()
+  sig1_down <- gene_sceptre %>%
+    filter(replicate=="Rep1", significant, log_2_fold_change < 0) %>%
+    pull(response_id) %>% unique()
+  sig2_down <- gene_sceptre %>%
+    filter(replicate=="Rep2", significant, log_2_fold_change < 0) %>%
+    pull(response_id) %>% unique()
+  
+  # make venn diagrams
+  venn_up <- venn.diagram(
+    x = list(Rep1 = sig1_up, Rep2 = sig2_up),
+    filename = NULL,
+    main     = "DE up",
+    fill     = c("firebrick","firebrick1"),
+    alpha    = 0.5,
+    scaled   = TRUE,
+    margin   = 0.05,
+    cat.pos  = c(-20, 20),
+    cat.dist = c(0.03, 0.03)
+  )
+  
+  venn_down <- venn.diagram(
+    x = list(Rep1 = sig1_down, Rep2 = sig2_down),
+    filename = NULL,
+    main     = "DE down",
+    fill     = c("steelblue","skyblue"),
+    alpha    = 0.5,
+    scaled   = TRUE,
+    margin   = 0.05,
+    cat.pos  = c(-20, 20),
+    cat.dist = c(0.03, 0.03)
+  )
+  
+  # plot them as a grid
+  lay <- rbind(c(1,2),
+               c(1,3))
+  grid.newpage()
+  up_grob   <- grobTree(venn_up)
+  down_grob <- grobTree(venn_down)
+  plot_grid <- grid.arrange(
+    scatter_plot,
+    up_grob,
+    down_grob,
+    layout_matrix = lay,
+    widths = c(2,1),
+    heights = c(1,1)
+  )
+  return(plot_grid)
+}
+Spi1_rep_agreement <- plot_replicate_agreement(sceptre_5X_combined, "Spi1")
+Spi1_rep_agreement
+```
+
+```{r, eval=FALSE}
+# save plot
+ggsave( filename = "manuscript/figs/Spi1_rep_agreement.pdf",
+        plot     = Spi1_rep_agreement,
+        width    = 7.5,
+        height   = 5,
+        units    = "in"
+        )
+```
+
+
+## Overall overlap with Rep2
+
+The **Overlap Coefficient**, also known as the Szymkiewicz–Simpson coefficient, is defined as the size of the union of set A and set B over the size of the smaller set between A and B.
+
+In the case of default sceptre settings it is (368 + 445) / (368 + 445 + 216 + 106) = 0.716. It is actually less with 2PCs (0.68) or 3PCs (0.69) as covariates in sceptre model. 
+
+```{r}
+# How many significant genes from Rep2 are found in Rep1?
+df <- sceptre_5X_combined
+
+rep1_sig <- df %>%
+  filter(replicate == "Rep1", significant) %>%
+  select(grna_target, response_id, log_2_fold_change) %>%
+  rename(log2FC_Rep1 = log_2_fold_change)
+
+rep2_sig <- df %>%
+  filter(replicate == "Rep2", significant) %>%
+  select(grna_target, response_id, log_2_fold_change) %>%
+  rename(log2FC_Rep2 = log_2_fold_change)
+
+merged <- merge(rep2_sig, rep1_sig, by = c("grna_target","response_id"), all=TRUE) 
+#build unqiue keys for up and down
+df <- merged
+df_ids <- df %>%
+  filter(!is.na(grna_target), !is.na(response_id)) %>%
+  mutate(pair_id = as.integer(interaction(grna_target, response_id, drop = TRUE)))
+
+# --- build sets ---
+rep1_up   <- df_ids %>% filter(!is.na(log2FC_Rep1), log2FC_Rep1 > 0) %>% pull(pair_id) %>% unique()
+rep1_down <- df_ids %>% filter(!is.na(log2FC_Rep1), log2FC_Rep1 < 0) %>% pull(pair_id) %>% unique()
+rep2_up   <- df_ids %>% filter(!is.na(log2FC_Rep2), log2FC_Rep2 > 0) %>% pull(pair_id) %>% unique()
+rep2_down <- df_ids %>% filter(!is.na(log2FC_Rep2), log2FC_Rep2 < 0) %>% pull(pair_id) %>% unique()
+
+
+# make venn diagrams
+pairwise_venn_grob <- function(A, B, title, fill = c("firebrick","firebrick1")) {
+  A <- unique(A); B <- unique(B)
+  grid::grid.grabExpr({
+    grid::grid.newpage()
+    grid::grid.draw(
+      draw.pairwise.venn(
+        area1 = length(A),
+        area2 = length(B),
+        cross.area = length(intersect(A, B)),
+        category = c("Replicate 1", "Replicate 2"),
+        scaled = TRUE,
+        fill = fill, alpha = 0.5, lwd = 2,
+        cex = 1.2, cat.cex = 1.0, main = title
+      )
+    )
+  })
+}
+venn_up   <- pairwise_venn_grob(rep1_up,   rep2_up,   "DE up (log2FC > 0)",
+                                fill = c("firebrick","firebrick1"))
+venn_down <- pairwise_venn_grob(rep1_down, rep2_down, "DE down (log2FC < 0)",
+                                fill = c("steelblue","skyblue"))
+grid.newpage()
+grid.arrange(venn_up, venn_down, ncol = 2)
+#default
+(368 + 445) / (368 + 445 + 216 + 106)
+#2PCs
+(200 + 284) / (200 + 284 + 144 + 83)
+#3PCs
+(195 + 236) / (195 + 236 + 127 + 64)
+
+```
+
+
+# Check avg on-target using sceptre DE table
+
+- Because of stricter QC for cells in sceptre, on-target repression and the number of genes which have significant on-target gene repression is considerably lower.
+
+```{r}
+# Load "final" sceptre DE tables
+Rep1_5X_sceptre_de <- read_csv("/users/lvelten/jbowness/CRISPRi500/HSC/clean_analysis/manuscript/int_files/Rep1_5X_sceptre_de_ext.csv")
+Rep1_Rem_sceptre_de <- read_csv("/users/lvelten/jbowness/CRISPRi500/HSC/clean_analysis/manuscript/int_files/Rep1_Rem_sceptre_de_ext.csv")
+
+# subset to on-target
+Rep1_5X_sceptre_de_ontarget <- subset(Rep1_5X_sceptre_de, target_gene == response_id)
+Rep1_Rem_sceptre_de_ontarget <- subset(Rep1_Rem_sceptre_de, target_gene == response_id)
+Rep1_sceptre_de_ontarget <- rbind(Rep1_5X_sceptre_de_ontarget,Rep1_Rem_sceptre_de_ontarget)
+summary(Rep1_sceptre_de_ontarget$log_2_fold_change)
+
+
+```
+
+
+# Session Info
+
+```{r}
+sessionInfo()
+```

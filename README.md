@@ -4,4 +4,4 @@ Install with `devtools::build_github("veltenlab/hsc18", build_vignettes=T)` . Bu
 
 For usage info and to reproduce figures 3&4 from Bowness et al., 2026, see package vignettes.
 
-Information on how to process Perturb-Seq data, adapt the package to new datasets, and scripts to reproduce figure 1&2 will be added.
+To reproduce figures 1&2, see folder `manuscript_figures`.

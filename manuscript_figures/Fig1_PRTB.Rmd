@@ -1,0 +1,1229 @@
+---
+title: "Make plots for PRTB transformation Figure 1"
+author: "Joe Bowness"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+params:
+  rmd: "Fig1_PRTB"
+abstract: This is a record of performing nearest-neighbour correction (ie generating PRTB assay) on the CRISPRi500 HSC data set. Plots demonstrate how the PRTB transformation accounts for heterogeneity in the data set and emphasises correlations in pseudobulks between guides which target the same gene for CRISPRi. I then define the SGS score (Same Gene Similarity) for each perturbation, and use this to justify subsetting the data set to only perturbations which show consistent effects between the guide replicates.
+output_dir: "/home/jbowness/cluster/jbowness/CRISPRi500/HSC/clean_analysis/manuscript/"
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+    code_folding: hide
+    toc_depth: 4
+    toc_float:
+      collapsed: false
+    highlight: pygments
+editor_options:
+  chunk_output_type: console
+---
+## Required packages
+
+```{r, message=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(Seurat)
+library(corrplot)
+library(future)
+library(ggrepel)
+library(mclust)
+
+options(future.globals.maxSize = 15 * 1024^3)
+```
+
+## Load and modify seurat object
+
+- Although we excluded them in differential expression analysis, I decided **not to exclude** NT10 and NT12 from the set of control guide RNAs for calculating prtb scores.
+- This is based on the assumption that the abnormal patterns from NT10 and NT12 are due to clonal expansions, and not because the NT guides have true effects. Neighbour-correction should account for the clonal effect, so there is no reason to exclude them as control cells...  
+
+```{r, eval=FALSE}
+CRISPRi500_HSC_WTx <- readRDS("~/cluster/jbowness/CRISPRi500/HSC/clean_analysis/seurat_objects/CRISPRi500_HSC_WTx_corrected.RDS")
+
+# make singletarget column
+CRISPRi500_HSC_WTx@meta.data$singletarget <- sub("-.*", "", CRISPRi500_HSC_WTx@meta.data$single_guides)
+CRISPRi500_HSC_WTx@meta.data$singletarget[grepl("NO|ONE", CRISPRi500_HSC_WTx@meta.data$singletarget)] <- "Non-targeting"
+
+# This would remove NO-SITE-sgRNA-10 NO-SITE-sgRNA-12 from controls and have them separate in the 'singletarget' column
+#CRISPRi500_HSC_WTx$singletarget[CRISPRi500_HSC_WTx$single_guides == "NO-SITE-sgRNA-10"] <- "NO-SITE-sgRNA-10"
+#CRISPRi500_HSC_WTx$singletarget[CRISPRi500_HSC_WTx$single_guides == "NO-SITE-sgRNA-12"] <- "NO-SITE-sgRNA-12"
+
+# Make single_guides_for_prtb column (make all controls "Non-targeting")
+CRISPRi500_HSC_WTx$single_guides_for_prtb <- CRISPRi500_HSC_WTx$single_guides
+CRISPRi500_HSC_WTx$single_guides_for_prtb[CRISPRi500_HSC_WTx$singletarget == "Non-targeting"] <- "Non-targeting"
+
+# Make cells without guides NA instead of ""
+CRISPRi500_HSC_WTx$single_guides[CRISPRi500_HSC_WTx$single_guides == ""] <- NA
+
+```
+
+# PRTB TRANSFORMATION
+
+## Select genes for PRTB assay
+
+- Take 10 most DE genes for each perturbation 
+- 1000 most variable genes in seurat assay
+- Filter to only keep genes that have > 0.25 UMIs per cell
+- Changing the DE results from 2PCs to default -> 2289 genes are the same, 400 only in default, 586 only in 2PC
+
+```{r, eval=FALSE}
+generate_features_to_include <- function(
+  seurat_obj,
+  path_5X,
+  path_Rem,
+  num_de_genes_to_choose_5X = 10,
+  num_de_genes_to_choose_Rem = 10,
+  num_var_genes_to_choose = 1000,
+  umi_threshold = 0.25,
+  assay = "SCT"
+) {
+  # --- read differential expression results ---
+  de_5X  <- readRDS(path_5X)
+  de_Rem <- readRDS(path_Rem)
+
+  # --- top DE genes per perturbation target ---
+  de_5X_top <- de_5X %>%
+    group_by(grna_target) %>%
+    arrange(p_value) %>%
+    slice_head(n = num_de_genes_to_choose_5X) %>%
+    ungroup()
+
+  de_Rem_top <- de_Rem %>%
+    group_by(grna_target) %>%
+    arrange(p_value) %>%
+    slice_head(n = num_de_genes_to_choose_Rem) %>%
+    filter(!is.na(p_value)) %>%
+    ungroup()
+
+  perturb_de_genes <- unique(c(de_5X_top$response_id, de_Rem_top$response_id))
+
+  # --- top variable genes across assay ---
+  seurat_obj <- FindVariableFeatures(
+    object = seurat_obj,
+    assay = assay,
+    nfeatures = num_var_genes_to_choose
+  )
+  top_var_genes <- VariableFeatures(seurat_obj, assay = assay)
+
+  # --- UMI filter (> threshold UMIs per cell) ---
+  umi_means <- rowMeans(seurat_obj@assays[[assay]]@counts)
+  umi_pass  <- names(umi_means[umi_means > umi_threshold])
+
+  top_var_genes_umi_filtered <- intersect(top_var_genes, umi_pass)
+
+  # --- combine DE + variable ---
+  features_to_include <- unique(c(perturb_de_genes, top_var_genes_umi_filtered))
+
+  message("Selected ", length(features_to_include), " total features.")
+  return(features_to_include)
+}
+
+# these are features I was using before
+features_to_include_2PC <- generate_features_to_include(
+  seurat_obj = CRISPRi500_HSC_WTx,
+  path_5X = "~/cluster/jbowness/CRISPRi500/HSC/clean_analysis/sceptre/sceptre_outputs/CRISPRi500_HSC_Rep1_5X_rmNT10_2PC/results_run_discovery_analysis.rds",
+  path_Rem = "~/cluster/jbowness/CRISPRi500/HSC/clean_analysis/sceptre/sceptre_outputs/CRISPRi500_HSC_Rep1_Rem_rmNT12_2PC/results_run_discovery_analysis.rds"
+)
+
+# these are features when using DE without covariate correction
+features_to_include_default <- generate_features_to_include(
+  seurat_obj = CRISPRi500_HSC_WTx,
+  path_5X = "~/cluster/jbowness/CRISPRi500/HSC/clean_analysis/sceptre/sceptre_outputs/CRISPRi500_HSC_Rep1_5X_rmNT10_default/results_run_discovery_analysis.rds",
+  path_Rem = "~/cluster/jbowness/CRISPRi500/HSC/clean_analysis/sceptre/sceptre_outputs/CRISPRi500_HSC_Rep1_Rem_rmNT12_default/results_run_discovery_analysis.rds"
+)
+```
+
+## Choose which features_to_include
+
+```{r, eval=FALSE}
+# choose either the default or the 2PC features_to_include
+features_to_include <- features_to_include_default
+#features_to_include <- features_to_include_2PC
+```
+
+## Perform the PRTB correction
+
+- The transcriptome of each cell is normalised by subtracting that cell from the average of its 20 nearest neighbours control cells ie. Exp(neighbours) - Exp(perturbed cell). This is done in log1p space. 
+- This means that a repressed gene (ie. the target gene of the guide), which has lower counts in the perturbed cell than its neighbours, becomes transformed into a positive value.
+- Control cells are defined by the labels of "Non-targeting" in the "single_guides" column (ie. these are cells where only 1 unique control guide RNA was detected)
+- Nearest neighbours are found in 40 dimensions of PCA space
+- All cells, included cells without guides and control cells themselves, are subject to this same procedure
+- PRTB scores are centred as suggested in https://satijalab.org/seurat/archive/v4.3/mixscape_vignette 
+
+```{r, eval=FALSE}
+# set default assay to SCT (we use the "data" slot, which contains log1p-normalised 'corrected' counts)
+DefaultAssay(CRISPRi500_HSC_WTx) <- "SCT"
+
+# this is the calculation of the perturbation signature
+CRISPRi500_HSC_WTx <- CalcPerturbSig(
+  object = CRISPRi500_HSC_WTx, 
+  features = features_to_include,
+  assay = "SCT", 
+  slot = "data",
+  gd.class ="single_guides_for_prtb", 
+  nt.cell.class = "Non-targeting", 
+  reduction = "pca", 
+  ndims = 40, 
+  num.neighbors = 20, 
+  new.assay.name = "prtb",
+  verbose=TRUE)
+
+plot(density(colMeans(CRISPRi500_HSC_WTx@assays[["prtb"]]@data)))
+
+#Scale and centre the prtb assay - regress out library size covariatates
+CRISPRi500_HSC_WTx <- ScaleData(CRISPRi500_HSC_WTx,
+                                  assay = "prtb",
+                                vars.to.regress = c("nCount_RNA", "nFeature_RNA"),
+                                do.scale = F,
+                                do.center = T,
+                                verbose = TRUE)
+plot(density(colMeans(CRISPRi500_HSC_WTx@assays[["prtb"]]@scale.data)))
+```
+
+## Make prtb pseudobulk
+
+```{r, eval=FALSE}
+# Average expression from prtb assay in seurat object over features
+perturbations_by_features_guide_prtb <- Seurat::AverageExpression(CRISPRi500_HSC_WTx,
+                                                 assays = "prtb", 
+                                                 layer = "scale.data",
+                                                 group.by = "single_guides",
+                                                 verbose=TRUE)
+perturbations_by_features_guide_prtb <- as.data.frame(perturbations_by_features_guide_prtb)
+
+#remove prtb from col names
+colnames(perturbations_by_features_guide_prtb) <- gsub("^prtb\\.", "", colnames(perturbations_by_features_guide_prtb))
+#remove .CRISPRi.sgRNA. from col names
+colnames(perturbations_by_features_guide_prtb) <- sub(".CRISPRi.sgRNA*", "", colnames(perturbations_by_features_guide_prtb))
+
+### look at what the prtb scores are for Mecom upon Mecom perturbation (expression goes down) and Atf7ip upon Setdb1 perturbation (expression goes up) 
+perturbations_by_features_guide_prtb["Mecom",c("Mecom.1","Mecom.2","Mecom.3","NO.SITE.sgRNA.1","NO.SITE.sgRNA.2")]
+perturbations_by_features_guide_prtb["Atf7ip",c("Setdb1.1","Setdb1.2","Setdb1.3","NO.SITE.sgRNA.1","NO.SITE.sgRNA.2")]
+
+#remove perturbation itself from scores 
+for (row in rownames(perturbations_by_features_guide_prtb)) {
+  for (col in colnames(perturbations_by_features_guide_prtb)) {
+    if (grepl(row, col)) {
+      perturbations_by_features_guide_prtb[row, col] <- 0
+    }
+  }
+}
+#now all 3 Mecom guides are turned to 0
+perturbations_by_features_guide_prtb["Mecom",c("Mecom.1","Mecom.2","Mecom.3")]
+
+```
+
+## Make paired SCT pseudobulk 
+
+- In order to properly compare the pseudobulks, we need to regenerate the SCT assay with same selected genes as used in the PRTB
+
+```{r, eval=FALSE}
+# Recompute SCT using the same variable genes used in prtb
+recompute_SCT_with_custom_features <- function(seurat_obj,
+                                               features_to_include,
+                                               base_assay = "RNA",
+                                               new_assay  = "SCT2",
+                                               vars_to_regress = NULL,
+                                               use_glmGamPoi = TRUE) {
+  stopifnot(base_assay %in% names(seurat_obj@assays))
+  DefaultAssay(seurat_obj) <- base_assay
+  # 1) Keep only features present in the object
+  feats <- intersect(features_to_include, rownames(seurat_obj[[base_assay]]))
+  obj_sub <- DietSeurat(
+    seurat_obj,
+    assays = base_assay,
+    counts = TRUE, data = TRUE, 
+    dimreducs = NULL, graphs = NULL
+  )
+  obj_sub <- subset(obj_sub, features = feats)
+
+
+  # 2) Recompute SCT (keep all genes in the new assay so downstream markers work)
+  obj_sub <- SCTransform(
+    object = obj_sub,
+    assay = base_assay,
+    new.assay.name = "SCT_tmp",
+    vars.to.regress = vars_to_regress,
+    method = if (use_glmGamPoi) "glmGamPoi" else "poisson",
+    return.only.var.genes = FALSE,   # keep all genes in SCT2
+    verbose = TRUE
+  )
+  
+  # 3) attach this SCT assay back to the full object as `new_assay"
+  seurat_obj[[new_assay]] <- obj_sub[["SCT_tmp"]]
+  VariableFeatures(seurat_obj, assay = new_assay) <- feats
+
+  return(seurat_obj)
+}
+CRISPRi500_HSC_WTx <- recompute_SCT_with_custom_features(CRISPRi500_HSC_WTx, features_to_include)
+
+# Average expression from SCT assay in seurat object over features
+perturbations_by_features_guide_sct <- Seurat::AverageExpression(CRISPRi500_HSC_WTx,
+                                                 assays = "SCT2", 
+                                                 layer = "scale.data",
+                                                 group.by = "single_guides",
+                                                 verbose = TRUE)
+perturbations_by_features_guide_sct <- as.data.frame(perturbations_by_features_guide_sct)
+
+#remove SCT from col names
+colnames(perturbations_by_features_guide_sct) <- gsub("^SCT2\\.", "", colnames(perturbations_by_features_guide_sct))
+
+#remove .CRISPRi.sgRNA. from col names
+colnames(perturbations_by_features_guide_sct) <- sub(".CRISPRi.sgRNA*", "", colnames(perturbations_by_features_guide_sct))
+perturbations_by_features_guide_sct["Mecom",c("Mecom.1","Mecom.2","Mecom.3","NO.SITE.sgRNA.1","NO.SITE.sgRNA.2")]
+perturbations_by_features_guide_sct["Atf7ip",c("Setdb1.1","Setdb1.2","Setdb1.3","NO.SITE.sgRNA.1","NO.SITE.sgRNA.2")]
+
+#remove perturbation itself from scores 
+for (row in rownames(perturbations_by_features_guide_sct)) {
+  for (col in colnames(perturbations_by_features_guide_sct)) {
+    if (grepl(row, col)) {
+      perturbations_by_features_guide_sct[row, col] <- 0
+    }
+  }
+}
+#now all 3 Mecom guides are turned to 0
+perturbations_by_features_guide_sct["Mecom",c("Mecom.1","Mecom.2","Mecom.3")]
+
+```
+
+## save the features_to_include, the pseudobulks, and the updated seurat object
+
+```{r, eval=FALSE}
+write.csv(features_to_include_default, 
+          file = "manuscript/int_files/features_to_include_default.csv",
+          row.names = FALSE)
+write.csv(features_to_include_2PC, 
+          file = "manuscript/int_files/features_to_include_2PC.csv",
+          row.names = FALSE)
+
+write.csv(perturbations_by_features_guide_sct, 
+          file = "manuscript/int_files/perturbations_by_features_guide_sct.csv",
+          row.names = FALSE)
+write.csv(perturbations_by_features_guide_prtb, 
+          file = "manuscript/int_files/perturbations_by_features_guide_prtb.csv",
+          row.names = FALSE)
+
+# with rownames
+write.csv(perturbations_by_features_guide_sct, 
+          file = "manuscript/int_files/perturbations_by_features_guide_sct_rownames.csv",
+          row.names = TRUE)
+write.csv(perturbations_by_features_guide_prtb, 
+          file = "manuscript/int_files/perturbations_by_features_guide_prtb_rownames.csv",
+          row.names = TRUE)
+
+
+saveRDS(CRISPRi500_HSC_WTx, file = "/home/jbowness/cluster/jbowness/CRISPRi500/HSC/clean_analysis/seurat_objects/CRISPRi500_HSC_WTx_prtb.RDS")
+
+```
+
+## UMAPs before and after PRTB
+
+```{r}
+# re-load in seurat object, now with PRTB assay
+CRISPRi500_HSC_WTx <- readRDS("~/cluster/jbowness/CRISPRi500/HSC/clean_analysis/seurat_objects/CRISPRi500_HSC_WTx_prtb.RDS")
+
+# load features_to include
+features_to_include <- read_csv("/home/jbowness/cluster/jbowness/CRISPRi500/HSC/clean_analysis/manuscript/int_files/features_to_include_default.csv")$"x"
+```
+
+- In testing this, I also ran the PCA with 'jackstraw = TRUE', but this requires you to store the reduction with the default 'pca' name.
+
+- Performing JackStraw() and ScoreJackStraw() on a subsampled data set (10k cells) definitively showed that PCs beyond 20 are not significant. 
+
+- Inferences from the Elbowplot vary from PC7 to PC11. It looks like there are 3 elbows in the plot at ~PC9, ~PC12 and PC19.
+
+- I decide to use 15 PCs for the UMAP
+
+```{r, eval=FALSE}
+#PCA and cluster based on prtb
+DefaultAssay(CRISPRi500_HSC_WTx) <- 'prtb'
+
+# Use variable features features_to_include
+VariableFeatures(CRISPRi500_HSC_WTx) <- features_to_include
+
+# Run PCA to reduce the dimensionality of the data.
+CRISPRi500_HSC_WTx <- RunPCA(CRISPRi500_HSC_WTx, 
+                             npcs = 50,
+                             reduction.key = 'prtbpca',
+                             reduction.name = 'prtbpca',
+                             verbose = TRUE)
+```
+
+```{r, fig.width=6, fig.height=5}
+# How many PCs to use for UMAP?
+ElbowPlot(CRISPRi500_HSC_WTx, ndims = 30)
+
+# "Programmatic elbow" = PC7
+find_elbow <- function(stdev, ndims = 50, smooth = TRUE) {
+  x <- 1:ndims
+  y <- stdev[1:ndims]^2  # variance explained (unnormalized is fine)
+  if (smooth) y <- stats::predict(stats::loess(y ~ x, span = 0.3))
+  x1 <- x[1]; y1 <- y[1]; x2 <- x[ndims]; y2 <- y[ndims]
+  dist <- abs((y2 - y1)*x - (x2 - x1)*y + x2*y1 - y2*x1) / sqrt((y2 - y1)^2 + (x2 - x1)^2)
+  which.max(dist)
+}
+stdev <- CRISPRi500_HSC_WTx[["prtbpca"]]@stdev
+npcs  <- find_elbow(stdev, ndims = 50)
+npcs
+
+# "2nd derivative elbow" = PC11
+pct <- (stdev^2) / sum(stdev^2) * 100
+y   <- pct[1:50]
+k   <- which.max(-diff(y, differences = 2)) + 2
+k
+```
+
+```{r, eval=FALSE}
+# Run UMAP to visualize clustering in 2-D.
+CRISPRi500_HSC_WTx <- RunUMAP(
+  object = CRISPRi500_HSC_WTx, 
+  dims = 1:15, 
+  reduction = 'prtbpca', 
+  reduction.key = 'prtbumap', 
+  reduction.name = 'prtbumap')
+
+# Change default assay back to SCT
+DefaultAssay(CRISPRi500_HSC_WTx) <- 'SCT'
+```
+
+```{r, fig.width=10, fig.height=4.5}
+# UMAPs by cell state or cell cycle
+cellstate_after <- DimPlot(CRISPRi500_HSC_WTx,  
+                           reduction = "prtbumap", group.by = 'cellstate', label=TRUE) +
+  scale_color_brewer(palette = "Set2") +
+  theme_minimal() +
+  theme(axis.title = element_blank(), 
+        axis.text = element_blank(), 
+        axis.ticks = element_blank(), 
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+cellcycle_after <- DimPlot(CRISPRi500_HSC_WTx,  
+                           reduction = "prtbumap", group.by = 'Phase', label=TRUE) +
+  theme_minimal() +
+  theme(axis.title = element_blank(), 
+        axis.text = element_blank(), 
+        axis.ticks = element_blank(), 
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+cellstate_after + cellcycle_after
+```
+
+```{r, eval=FALSE}
+# save plot
+ggsave( filename = "manuscript/figs/prtb_umap_cellstate.pdf",
+        plot     = cellstate_after,
+        width    = 5.5,
+        height   = 5,
+        units    = "in"
+        )
+ggsave( filename = "manuscript/figs/prtb_umap_cellcycle.pdf",
+        plot     = cellcycle_after,
+        width    = 5.5,
+        height   = 5,
+        units    = "in"
+        )
+```
+
+```{r, fig.width=8, fig.height=10}
+# function to plot UMAP by guide (standard and prtb)
+plot_umap_named_guide <- function(seurat_obj, guide_id, colour){
+        seurat_obj$contains_target_guide <- grepl(guide_id, seurat_obj$guide_idents)
+        #plot umap
+        umap_plot <- DimPlot(seurat_obj,
+                          reduction = "umap",
+                          group.by = "contains_target_guide", 
+                          cols = c("grey", colour), label = FALSE)
+        umap_plot <- umap_plot + 
+          geom_point(data = subset(umap_plot$data, contains_target_guide == TRUE), 
+                 aes(x = umap_1, y = umap_2), 
+                 color = colour, size = 0.5) + 
+      ggtitle(guide_id) +
+      theme_minimal() +
+      theme(legend.position = "none",                  
+        axis.title = element_blank(), axis.text = element_blank(), axis.ticks = element_blank(), 
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5,  face = "bold", size = 8))
+        return(umap_plot)
+        }
+plot_umap_named_guide_prtb <- function(seurat_obj, guide_id, colour){
+        seurat_obj$contains_target_guide <- grepl(guide_id, seurat_obj$guide_idents)
+        #plot umap
+        umap_plot <- DimPlot(seurat_obj,
+                          reduction = "prtbumap",
+                          group.by = "contains_target_guide", 
+                          cols = c("grey", colour), label = FALSE)
+        umap_plot <- umap_plot + 
+          geom_point(data = subset(umap_plot$data, contains_target_guide == TRUE), 
+                 aes(x = prtbumap_1, y = prtbumap_2),
+                 color = colour, size = 0.5) + 
+      ggtitle(guide_id) +
+      theme_minimal() +
+      theme(legend.position = "none",                  
+        axis.title = element_blank(), axis.text = element_blank(), axis.ticks = element_blank(), 
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5,  face = "bold", size = 8))
+        return(umap_plot)
+}
+
+# UMAPs for 2 example guides
+NT12_before <- plot_umap_named_guide(CRISPRi500_HSC_WTx, "NO-SITE-sgRNA-12","black")
+NT12_after <- plot_umap_named_guide_prtb(CRISPRi500_HSC_WTx, "NO-SITE-sgRNA-12","black")
+Dnmt3a_1_before <- plot_umap_named_guide(CRISPRi500_HSC_WTx, "Dnmt3a-CRISPRi-sgRNA-1","darkgreen")
+Dnmt3a_1_after <- plot_umap_named_guide_prtb(CRISPRi500_HSC_WTx, "Dnmt3a-CRISPRi-sgRNA-1","darkgreen")
+Spi1_1_before <- plot_umap_named_guide(CRISPRi500_HSC_WTx, "Spi1-CRISPRi-sgRNA-1","blue2")
+Spi1_1_after <- plot_umap_named_guide_prtb(CRISPRi500_HSC_WTx, "Spi1-CRISPRi-sgRNA-1","blue2")
+Brd9_2_before <- plot_umap_named_guide(CRISPRi500_HSC_WTx, "Brd9-CRISPRi-sgRNA-2","red3")
+Brd9_2_after <- plot_umap_named_guide_prtb(CRISPRi500_HSC_WTx, "Brd9-CRISPRi-sgRNA-2","red3")
+
+prtb_plots_list <- list()
+prtb_plots_list[["NT12_before"]] <- NT12_before
+prtb_plots_list[["NT12_after"]] <- NT12_after
+#prtb_plots_list[["Dnmt3a_1_before"]] <- Dnmt3a_1_before
+#prtb_plots_list[["Dnmt3a_1_after"]] <- Dnmt3a_1_after
+prtb_plots_list[["Spi1_1_before"]] <- Spi1_1_before
+prtb_plots_list[["Spi1_1_after"]] <- Spi1_1_after
+prtb_plots_list[["Brd9_2_before"]] <- Brd9_2_before
+prtb_plots_list[["Brd9_2_after"]] <- Brd9_2_after
+
+final_prtb_umap <- wrap_plots(plotlist = prtb_plots_list, ncol = 2, nrow = 3)
+final_prtb_umap
+
+```
+
+```{r, eval=FALSE}
+# save plot
+ggsave( filename = "manuscript/figs/prtb_umap_exampleguides.pdf",
+        plot     = final_prtb_umap,
+        width    = 7,
+        height   = 9.4,
+        units    = "in"
+        )
+
+```
+
+# Within-gene correlations before/after PRTB transformation
+
+## Load matrices of pseudobulks by perturbation:
+
+```{r}
+# These are features included in prtb assay
+features_to_include <- read_csv("/home/jbowness/cluster/jbowness/CRISPRi500/HSC/clean_analysis/manuscript/int_files/features_to_include_default.csv")$"x"
+#features_to_include <- read_csv("manuscript/int_files/features_to_include_2PC.csv")$"x"
+
+# perturbation-by-feature matrix before prtb transformation
+perturbations_by_features_guide_sct <- read_csv("/home/jbowness/cluster/jbowness/CRISPRi500/HSC/clean_analysis/manuscript/int_files/perturbations_by_features_guide_sct.csv")
+
+# perturbation-by-feature matrix after prtb transformation
+perturbations_by_features_guide_prtb <- read_csv("/home/jbowness/cluster/jbowness/CRISPRi500/HSC/clean_analysis/manuscript/int_files/perturbations_by_features_guide_prtb.csv")
+```
+
+## Make correlation and distance matrices
+
+```{r}
+# ---- SPEARMAN correlation matrices ----
+perturbation_guide_cormatrix_sct_spearman <- cor(perturbations_by_features_guide_sct,
+                             method = c("spearman"))
+perturbation_guide_cormatrix_prtb_spearman <- cor(perturbations_by_features_guide_prtb,
+                             method = c("spearman"))
+
+# Sanity checks that matricess are different
+#head(perturbations_by_features_guide_sct[1:5,1:5])
+#head(perturbation_guide_cormatrix_sct[1:5,1:5])
+
+#head(perturbations_by_features_guide_prtb[1:5,1:5])
+#head(perturbation_guide_cormatrix_prtb[1:5,1:5])
+
+# convert cor matrices to distance matrices (1 - correlation)
+perturbation_guide_distmatrix_sct_spearman <- as.matrix(as.dist(1 - perturbation_guide_cormatrix_sct_spearman))
+perturbation_guide_distmatrix_prtb_spearman <- as.matrix(as.dist(1 - perturbation_guide_cormatrix_prtb_spearman))
+
+# ---- PEARSON correlation matrices ----
+perturbation_guide_cormatrix_sct_pearson <- cor(perturbations_by_features_guide_sct,
+                             method = c("pearson"))
+perturbation_guide_cormatrix_prtb_pearson <- cor(perturbations_by_features_guide_prtb,
+                             method = c("pearson"))
+
+# convert cor matrices to distance matrices (1 - correlation)
+perturbation_guide_distmatrix_sct_pearson <- as.matrix(as.dist(1 - perturbation_guide_cormatrix_sct_pearson))
+perturbation_guide_distmatrix_prtb_pearson <- as.matrix(as.dist(1 - perturbation_guide_cormatrix_prtb_pearson))
+
+```
+
+## Use either Pearson or Spearman correlation
+
+```{r}
+#cortest_to_use <- "spearman"
+cortest_to_use <- "pearson"
+
+if (cortest_to_use == "spearman") {
+  perturbation_guide_cormatrix_prtb <- perturbation_guide_cormatrix_prtb_spearman
+  perturbation_guide_cormatrix_sct  <- perturbation_guide_cormatrix_sct_spearman
+  
+  perturbation_guide_distmatrix_prtb <- perturbation_guide_distmatrix_prtb_spearman
+  perturbation_guide_distmatrix_sct  <- perturbation_guide_distmatrix_sct_spearman
+
+} else if (cortest_to_use == "pearson") {
+  perturbation_guide_cormatrix_prtb <- perturbation_guide_cormatrix_prtb_pearson
+  perturbation_guide_cormatrix_sct  <- perturbation_guide_cormatrix_sct_pearson
+  
+  perturbation_guide_distmatrix_prtb <- perturbation_guide_distmatrix_prtb_pearson
+  perturbation_guide_distmatrix_sct  <- perturbation_guide_distmatrix_sct_pearson
+  
+} else {
+  stop("cortest_to_use must be 'spearman' or 'pearson'.")
+}
+
+```
+
+## Plot before/after PRTB corrplot 
+
+```{r}
+selected_genes <- c("Smarcc1",
+                    "Max", "Myc",
+                    "Cebpa", "Spi1", "Leo1",
+                    "Brd9", "Smarcd1", 
+                    "Ash2l", "Rbbp5")
+
+cols_7 <- colorRampPalette(c(
+  "#053061",
+  "#2166AC",
+  "#67A9CF",
+  "#F7F7F7",  
+  "#F4A582",
+  "#D6604D",
+  "#B2182B"   
+))(200)
+
+# subset and exaggerate both matrices
+subset.exaggerate.cormat <- function(cormat, selected_genes, power = 0.6){
+    cormat <- as.matrix(cormat)
+
+  # escape regex metacharacters in gene names
+  escape_regex <- function(x) gsub("([\\.^$|()\\[\\]{}+*?\\\\-])", "\\\\\\1", x, perl = TRUE)
+
+  # build regex pattern
+  pat <- paste0("^(", paste(escape_regex(selected_genes), collapse = "|"), ")", "\\.(1|2|3)$")
+
+  rn <- rownames(cormat); cn <- colnames(cormat)
+  if (is.null(rn) || is.null(cn)) stop("Matrix must have row and column names.")
+
+  # subset to matching guides
+  keep <- intersect(rn[grepl(pat, rn)], cn[grepl(pat, cn)])
+  if (length(keep) < 2L) stop("Fewer than 2 matching guides found for selected_genes.")
+
+  submat <- cormat[keep, keep, drop = FALSE]
+  #exagerate for colouring
+  exmat <- sign(submat) * abs(submat)^power
+  #make diagonals NA
+  diag(exmat) <- NA
+  return(exmat)
+}
+sub_prtb <- subset.exaggerate.cormat(perturbation_guide_cormatrix_prtb, selected_genes, power = 0.7)
+sub_sct <- subset.exaggerate.cormat(perturbation_guide_cormatrix_sct, selected_genes, power = 0.7)
+
+# heirarchical cluster based on prtb subset
+#ord <- corrplot::corrMatOrder(sub_prtb, order = "hclust")
+# alphabetical order
+ord <- sort(rownames(sub_prtb))
+sub_prtb <- sub_prtb[ord, ord]  # lock the order
+sub_sct <- sub_sct[ord, ord]  # lock the order
+
+# plot prtb (lower)
+suppressMessages(plot_exag_corrplot <- corrplot::corrplot(sub_prtb,
+                                         type = "lower",
+                                         order = "original",
+                                         method = "color",
+                                         col = cols_7,
+                                         diag = TRUE,
+                                         na.label = "square",
+                                         na.label.col = "white",
+                                         tl.cex = 0.5,
+                                         tl.pos = "lt",
+                                         tl.col = "black",
+                                         cl.pos = "n",
+                                         mar = c(0, 0, 3, 0),
+                                         main = "before (upper) vs after (lower) PRTB transformation"))
+
+# plot sct (upper)
+suppressMessages(plot_exag_corrplot <- corrplot::corrplot(sub_sct, 
+                                         type = "upper", 
+                                         order = "original",
+                                         method = "color",
+                                         col = cols_7,
+                                         diag = TRUE, 
+                                         add = TRUE,
+                                         na.label = "square",
+                                         na.label.col = "white",
+                                         tl.cex = 0.5,
+                                         tl.pos = "n",
+                                         tl.col = "black",
+                                         cl.pos = "n"))
+```
+
+
+## ARI before/after PRTB
+
+```{r}
+# Function to calculate Adjusted-Rand-Index
+guide_clustering_ari <- function(dist_mat, selected_genes = NULL) {
+  # need mclust for adjustedRandIndex
+  if (!requireNamespace("mclust", quietly = TRUE)) {
+    stop("Package 'mclust' is required but not installed.")
+  }
+
+  # ensure matrix
+  dist_mat <- as.matrix(dist_mat)
+
+  rn <- rownames(dist_mat)
+  cn <- colnames(dist_mat)
+  if (is.null(rn) || is.null(cn)) {
+    stop("Distance matrix must have row and column names.")
+  }
+
+  # optional subsetting to selected genes
+  if (!is.null(selected_genes)) {
+    # escape regex metacharacters in gene names
+    escape_regex <- function(x) {
+      gsub("([\\.^$|()\\[\\]{}+*?\\\\-])", "\\\\\\1", x, perl = TRUE)
+    }
+
+    # build regex pattern: Gene.(1|2|3)
+    pat <- paste0(
+      "^(",
+      paste(escape_regex(selected_genes), collapse = "|"),
+      ")",
+      "\\.(1|2|3)$"
+    )
+
+    keep <- intersect(rn[grepl(pat, rn)], cn[grepl(pat, cn)])
+    if (length(keep) < 2L) {
+      stop("Fewer than 2 matching guides found for selected_genes.")
+    }
+
+    dist_mat <- dist_mat[keep, keep, drop = FALSE]
+    rn <- rownames(dist_mat)  # update
+  }
+
+  # infer gene labels from rownames, e.g. "Abl1.1" -> "Abl1"
+  gene_for_guide <- sub("\\.[^.]+$", "", rn)
+  n_genes <- length(unique(gene_for_guide))
+  if (n_genes < 2L) {
+    stop("Fewer than 2 genes present; ARI not meaningful.")
+  }
+
+  # hierarchical clustering on distance matrix
+  d  <- as.dist(dist_mat)
+  hc <- hclust(d, method = "complete")
+
+  clusters <- cutree(hc, k = n_genes)
+
+  # Adjusted Rand Index between true gene labels and cluster labels
+  mclust::adjustedRandIndex(gene_for_guide, clusters)
+}
+
+# on whole data set
+guide_clustering_ari(perturbation_guide_distmatrix_sct)
+guide_clustering_ari(perturbation_guide_distmatrix_prtb)
+
+# on selected genes in heatmap
+guide_clustering_ari(perturbation_guide_distmatrix_sct, selected_genes = selected_genes)
+guide_clustering_ari(perturbation_guide_distmatrix_prtb, selected_genes = selected_genes)
+
+```
+
+# SGS score
+
+- Define **SGS - Same Gene Similarity** score for each guide as (distances to guides targeting same gene) / (distances to all other guides)
+- Summarise to get SGS scores for each gene
+- Filter by SGS scores for input to make perturbation embedding
+
+```{r}
+# define function to calculate SGS score
+calculate_SGS <- function(distmat, index) {
+  # parse gene names from guide IDs (strip trailing .digits)
+  guides <- colnames(distmat)
+  genes  <- sub("\\.\\d+$", "", guides)
+
+  # current guide/gene
+  guide_i <- guides[index]
+  gene_i <- genes[index]
+
+  # indices of same-gene guides
+  same_gene_idx <- which(genes == gene_i)
+
+  # paired = same-gene except itself
+  paired_idx <- setdiff(same_gene_idx, index)
+
+  # if no pair exists, score is NA (cannot compute within-gene avg)
+ if (length(paired_idx) == 0L) {
+    score <- NA_real_
+  } else {
+
+  # other = everything not in this gene
+  other_idx <- setdiff(seq_len(ncol(distmat)), same_gene_idx)
+
+  # compute means (NA-robust)
+  avg_same <- mean(distmat[index, paired_idx], na.rm = TRUE)
+  avg_other <- mean(distmat[index, other_idx], na.rm = TRUE)
+
+  # calculate score
+  score <- avg_same / avg_other
+  }
+  
+  SGS_result <- c(guide_i, gene_i, score)
+  return(SGS_result)
+}
+
+## ------ PRTB assay -------
+#indices of all non-control guides
+non_nt_idx <- which(!grepl("NO\\.SITE\\.|ONE\\.INTERGENIC\\.", colnames(perturbation_guide_distmatrix_prtb)))
+
+# calculate SGS for all targeting guides
+res <- vapply(
+  non_nt_idx,
+  function(i) calculate_SGS(perturbation_guide_distmatrix_prtb, i),
+  FUN.VALUE = character(3L))
+res <- t(res)
+SGS_guide_prtb <- data.frame(
+  Guide     = res[, 1],
+  Gene      = res[, 2],
+  SGS_score = suppressWarnings(as.numeric(res[, 3]))
+)
+SGS_gene_prtb <- SGS_guide_prtb %>%
+  group_by(Gene) %>%
+  summarise(Average_SGS = mean(SGS_score))
+
+## ------ SCT assay -------
+#indices of all targeting guides
+non_nt_idx <- which(!grepl("NO\\.SITE\\.|ONE\\.INTERGENIC\\.", colnames(perturbation_guide_distmatrix_sct)))
+# calculate SGS
+res <- vapply(
+  non_nt_idx,
+  function(i) calculate_SGS(perturbation_guide_distmatrix_sct, i),
+  FUN.VALUE = character(3L))
+res <- t(res)
+SGS_guide_sct <- data.frame(
+  Guide     = res[, 1],
+  Gene      = res[, 2],
+  SGS_score = suppressWarnings(as.numeric(res[, 3]))
+)
+SGS_gene_sct <- SGS_guide_sct %>%
+  group_by(Gene) %>%
+  summarise(Average_SGS = mean(SGS_score))
+
+
+```
+
+## Simulate distributions from non-targeting guides
+
+```{r}
+set.seed(50)
+# indexes of non-targeting guides (same in prtb and sct)
+nt_idx <- which(grepl("NO\\.SITE\\.|ONE\\.INTERGENIC\\.", colnames(perturbation_guide_distmatrix_sct)))
+
+
+## -------- Define functions-------- ####
+fake_SGS <- function(distmat, index) {
+  # indexes of other nt guides
+  nt_idx <- which(grepl("NO\\.SITE\\.|ONE\\.INTERGENIC\\.", colnames(distmat)))
+  
+  # selected guide
+  guides <- colnames(distmat)
+  guide_i <- guides[index]
+  
+  # random pairing
+  pool <- setdiff(nt_idx, index)
+  pair_idx <- sample(pool, 2)
+  
+  # other = everything not this guide or paired
+  other_idx <- setdiff(seq_len(ncol(distmat)), index)
+  other_idx <- setdiff(other_idx, pair_idx)
+
+  # compute means (NA-robust)
+  avg_same <- mean(distmat[index, pair_idx], na.rm = TRUE)
+  avg_other <- mean(distmat[index, other_idx], na.rm = TRUE)
+
+  # calculate score
+  score <- avg_same / avg_other
+  
+  SGS_result <- c(guide_i, score)
+  return(SGS_result)
+}
+fake_SGS_gene <- function(distmat, index,
+                          nt_patterns = c("NO\\.SITE\\.", "ONE\\.INTERGENIC\\."),
+                          sep = "|") {
+  # all NT indices
+  guides <- colnames(distmat)
+  nt_idx <- which(grepl(paste(nt_patterns, collapse = "|"), guides))
+
+  # pick 2 other NTs to pair with 'index'
+  pool <- setdiff(nt_idx, index)
+  pair_idx <- sample(pool, 2)
+
+  # fake gene set of 3 NT guigdes
+  fake_set <- c(index, pair_idx)
+  fake_guides <- guides[fake_set]
+
+  # helper: SGS for one member j of the fake set
+  sgs_one <- function(j) {
+    same_idx  <- setdiff(fake_set, j)             
+    other_idx <- setdiff(seq_len(ncol(distmat)), fake_set)       
+    if (length(other_idx) == 0L) return(NA_real_)
+    avg_same  <- mean(distmat[j, same_idx],  na.rm = TRUE)
+    avg_other <- mean(distmat[j, other_idx], na.rm = TRUE)
+    if (!is.finite(avg_other) || avg_other == 0) return(NA_real_)
+    avg_same / avg_other
+  }
+
+  # SGS for each of the 3, then mean
+  scores <- vapply(fake_set, sgs_one, numeric(1))
+  mean_SGS <- mean(scores, na.rm = TRUE)
+  
+  SGS_result <- c(paste(fake_guides, collapse = sep), mean_SGS)
+  return(SGS_result)
+}
+
+## -------- Generate NULL distribution SCT -------- ####
+# "guide" fake SGS - SCT
+res <- vapply(
+  rep(nt_idx, 10),
+  function(i) fake_SGS(perturbation_guide_distmatrix_sct, i),
+  FUN.VALUE = character(2L))
+res <- t(res)
+fake_SGS_guide_sct <- data.frame(
+  control_guide     = res[, 1],
+  fake_SGS      = res[, 2]
+  )
+q05_guide_sct <- quantile(as.numeric(fake_SGS_guide_sct$fake_SGS), probs = 0.05)
+q05_guide_sct
+
+# "gene" fake SGS - SCT
+res <- vapply(
+  rep(nt_idx, 10),
+  function(i) fake_SGS_gene(perturbation_guide_distmatrix_sct, i),
+  FUN.VALUE = character(2L))
+res <- t(res)
+fake_SGS_gene_sct <- data.frame(
+  fake_gene     = res[, 1],
+  fake_avg_SGS      = res[, 2]
+  )
+q05_gene_sct <- quantile(as.numeric(fake_SGS_gene_sct$fake_avg_SGS), probs = 0.05)
+q05_gene_sct
+
+## -------- Generate NULL distribution PRTB  -------- ####
+# "guide" fake SGS - prtb
+res <- vapply(
+  rep(nt_idx, 10),
+  function(i) fake_SGS(perturbation_guide_distmatrix_prtb, i),
+  FUN.VALUE = character(2L))
+res <- t(res)
+fake_SGS_guide_prtb <- data.frame(
+  control_guide     = res[, 1],
+  fake_SGS      = res[, 2]
+  )
+q05_guide_prtb <- quantile(as.numeric(fake_SGS_guide_prtb$fake_SGS), probs = 0.05)
+q05_guide_prtb
+
+# "gene" fake SGS - prtb
+res <- vapply(
+  rep(nt_idx, 10),
+  function(i) fake_SGS_gene(perturbation_guide_distmatrix_prtb, i),
+  FUN.VALUE = character(2L))
+res <- t(res)
+fake_SGS_gene_prtb <- data.frame(
+  fake_gene = res[, 1],
+  fake_avg_SGS = res[, 2]
+  )
+q05_gene_prtb <- quantile(as.numeric(fake_SGS_gene_prtb$fake_avg_SGS), probs = 0.05)
+q05_gene_prtb
+
+```
+
+## plot real vs fake
+
+- Set a threshold at 95% of the fake SGS scores
+
+```{r, fig.width=9, fig.height=6}
+plot_sgs_violin <- function(real_scores, fake_scores, q05,
+                            title = "SGS scores",
+                            SGS_df,
+                            gene_col  = "Gene",
+                            score_col = "Average_Score",
+                            label_top_n    = 10,
+                            tick_half_width = 0.06,
+                            label_x_offset  = 0.12,
+                            label_size      = 3) {
+
+  # Data: fake (x = 1) then real (x = 2)
+  group <- factor(c(rep("fake", length(fake_scores)),
+                    rep("real", length(real_scores))),
+                  levels = c("fake", "real"))
+  df <- data.frame(
+    x_num = as.numeric(group),  # 1 for fake, 2 for real
+    group = group,
+    score = c(fake_scores, real_scores)
+  )
+  x_real <- 2  # numeric x position for the "real" violin
+
+  # Base plot
+  p <- ggplot(df, aes(x = x_num, y = score, group = group, fill = group)) +
+    geom_violin(trim = FALSE, alpha = 0.6) +
+    geom_hline(yintercept = q05, linetype = "dashed", color = "red") +
+    scale_x_continuous(breaks = c(1, 2), labels = c("fake", "real")) +
+    labs(title = title, x = NULL, y = "score") +
+    theme_minimal()
+
+  # ---- Top-N lowest-scoring genes ----
+  stopifnot(all(c(gene_col, score_col) %in% names(SGS_df)))
+  keep  <- is.finite(SGS_df[[score_col]])
+  marks <- SGS_df[keep, c(gene_col, score_col), drop = FALSE]
+  names(marks) <- c("label","score")
+  marks <- head(marks[order(marks$score, decreasing = FALSE), , drop = FALSE], label_top_n)
+
+  if (nrow(marks) > 0) {
+    # Tick positions around the "real" violin
+    marks$xmin <- x_real - tick_half_width
+    marks$xmax <- x_real + tick_half_width
+
+    # Alternate sides, anchor at tick ends, and nudge outward
+    marks$side     <- rep(c("left","right"), length.out = nrow(marks))
+    marks$x_anchor <- ifelse(marks$side == "left",  marks$xmin, marks$xmax)
+    marks$nudge_x  <- ifelse(marks$side == "left", -label_x_offset, label_x_offset)
+    marks$hjust    <- ifelse(marks$side == "left", 1, 0)
+
+    # Draw horizontal ticks
+    p <- p + geom_segment(
+      data = marks,
+      aes(x = xmin, xend = xmax, y = score, yend = score),
+      inherit.aes = FALSE,
+      color = "black",
+      linewidth = 0.4
+    )
+
+    # Repelled labels (leaders from tick ends)
+    p <- p + ggrepel::geom_text_repel(
+      data = marks,
+      aes(x = x_anchor, y = score, label = label),
+      inherit.aes        = FALSE,
+      nudge_x            = marks$nudge_x,
+      nudge_y            = 0,
+      direction          = "y",
+      hjust              = marks$hjust,
+      box.padding        = 0.25,
+      point.padding      = 0.2,
+      min.segment.length = 0,
+      segment.size       = 0.3,
+      segment.color      = "grey80",
+      size               = label_size,
+      seed               = 42
+    )
+
+    # Keep both violins visible + labels, but now with flipped coords
+    ext <- label_x_offset + 0.5
+    p <- p +
+      coord_flip(ylim = c(0.2, 1.2),
+                 xlim = c(0.5, x_real + ext),
+                 clip = "off") +
+      theme(plot.margin = unit(c(5.5, 60, 5.5, 60), "pt"))
+
+  } else {
+    # If there are no marks, still flip the axes
+    p <- p + coord_flip()
+  }
+  p
+}
+
+p_prtb_gene <- plot_sgs_violin(
+  real_scores = as.numeric(SGS_gene_prtb$Average_SGS),
+  fake_scores = as.numeric(fake_SGS_gene_prtb$fake_avg_SGS),
+  q05         = q05_gene_prtb,
+  title       = "Same-Gene-Similarity (SGS) score (PRTB) per gene",
+  SGS_df      = SGS_gene_prtb,
+  score_col = "Average_SGS",
+  label_top_n = 15,
+  label_x_offset = 0.12
+)
+p_sct_gene <- plot_sgs_violin(
+  real_scores = as.numeric(SGS_gene_sct$Average_SGS),
+  fake_scores = as.numeric(fake_SGS_gene_sct$fake_avg_SGS),
+  q05         = q05_gene_sct,
+  title       = "Same-Gene-Similarity (SGS) score (SCT) per gene",
+  SGS_df      = SGS_gene_sct,
+  score_col = "Average_SGS",
+  label_top_n = 15,
+  label_x_offset = 0.12
+)
+p_sct_gene
+p_prtb_gene
+
+p_sct_guide <- plot_sgs_violin(
+  real_scores = as.numeric(SGS_guide_sct$SGS_score),
+  fake_scores = as.numeric(fake_SGS_guide_sct$fake_SGS),
+  q05         = q05_guide_sct,
+  title       = "Same-Gene-Similarity (SGS) score (SCT) per guide",
+  gene_col  = "Guide",
+  SGS_df      = SGS_guide_sct,
+  score_col = "SGS_score",
+  label_top_n = 15,
+  label_x_offset = 0.12
+)
+
+p_prtb_guide <- plot_sgs_violin(
+  real_scores = as.numeric(SGS_guide_prtb$SGS_score),
+  fake_scores = as.numeric(fake_SGS_guide_prtb$fake_SGS),
+  q05         = q05_guide_prtb,
+  title       = "Same-Gene-Similarity (SGS) score (PRTB) per guide",
+  gene_col  = "Guide",
+  SGS_df      = SGS_guide_prtb,
+  score_col = "SGS_score",
+  label_top_n = 15,
+  label_x_offset = 0.12
+)
+p_sct_guide
+p_prtb_guide
+```
+
+```{r, eval=FALSE}
+ggsave( filename = "manuscript/figs/SGS_score_violin_gene.pdf",
+        plot     = p_prtb_gene,
+        width    = 10,
+        height   = 3,
+        units    = "in"
+        )
+ggsave( filename = "manuscript/figs/SGS_score_violin_guide.pdf",
+        plot     = p_prtb_guide,
+        width    = 10,
+        height   = 3,
+        units    = "in"
+        )
+```
+
+## Subset to only consistent genes and guides
+
+```{r}
+# Filter genes
+SGS_gene_prtb_filt <- subset(SGS_gene_prtb,
+                            Average_SGS < q05_gene_prtb)
+
+# Filter guides
+SGS_guide_prtb_filt <- subset(SGS_guide_prtb,
+                              SGS_score < q05_guide_prtb)
+
+```
+
+
+```{r, eval=FALSE}
+# Write file of only filtered genes
+write.csv(SGS_gene_prtb_filt, 
+          file = sprintf("manuscript/int_files/SGS_gene_prtb_filt_%s.csv", cortest_to_use),
+          row.names = FALSE)
+
+# Write file of only filtered guides
+write.csv(SGS_guide_prtb_filt, 
+          file = sprintf("manuscript/int_files/SGS_guide_prtb_filt_%s.csv", cortest_to_use),
+          row.names = FALSE)
+
+```
+
+```{r}
+# ----- Filter perturbations_by_features_guide by guide -------
+perturbations_by_features_guide_prtb_filt <-  perturbations_by_features_guide_prtb[,
+                                                    colnames(perturbations_by_features_guide_prtb) %in% SGS_guide_prtb_filt$Guide]
+
+# make corr matrix (guide-only)
+cor_guide <- cor(
+  perturbations_by_features_guide_prtb_filt,
+  method = cortest_to_use,
+  use = "pairwise.complete.obs"
+)
+
+# rename to add test
+assign(paste0("perturbation_guide_prtb_filtguideonly_cor_", cortest_to_use), cor_guide)
+
+# ----- Filter perturbations_by_features_guide by gene -------
+base_gene_names <- sub("\\..*", "", colnames(perturbations_by_features_guide_prtb))
+cols_to_keep <- base_gene_names %in% SGS_gene_prtb_filt$Gene
+perturbations_by_features_guide_prtb_filtgene <- perturbations_by_features_guide_prtb[, cols_to_keep, drop = FALSE]
+
+if (ncol(perturbations_by_features_guide_prtb_filtgene) < 2L) {
+  stop("After gene filter: need at least 2 columns to compute a correlation matrix.")
+}
+
+# make corr matrix (guide + gene filtered)
+cor_gene <- cor(
+  perturbations_by_features_guide_prtb_filtgene,
+  method = cortest_to_use,
+  use = "pairwise.complete.obs"
+)
+
+# rename to add test
+assign(paste0("perturbation_guide_prtb_filtgene_cor_", cortest_to_use), cor_gene)
+
+# ----- Filter perturbations_by_features_guide by gene and guide -------
+base_gene_names <- sub("\\..*", "", colnames(perturbations_by_features_guide_prtb_filt))
+cols_to_keep <- base_gene_names %in% SGS_gene_prtb_filt$Gene
+perturbations_by_features_guide_prtb_filt <- perturbations_by_features_guide_prtb_filt[, cols_to_keep, drop = FALSE]
+
+if (ncol(perturbations_by_features_guide_prtb_filt) < 2L) {
+  stop("After gene filter: need at least 2 columns to compute a correlation matrix.")
+}
+
+# make corr matrix (guide + gene filtered)
+cor_gene <- cor(
+  perturbations_by_features_guide_prtb_filt,
+  method = cortest_to_use,
+  use = "pairwise.complete.obs"
+)
+
+# rename to add test
+assign(paste0("perturbation_guide_prtb_filtguide_gene_cor_", cortest_to_use), cor_gene)
+
+```
+
+```{r, eval=FALSE}
+# save correlation matrices as csv files
+write.csv(
+  cor_guide,
+  file = sprintf("manuscript/int_files/perturbation_guide_prtb_filtguideonly_cor_%s.csv", cortest_to_use),
+  row.names = TRUE
+)
+
+write.csv(
+  cor_gene, 
+  file = sprintf("manuscript/int_files/perturbation_guide_prtb_filtguide_gene_cor_%s.csv", cortest_to_use),
+  row.names = FALSE
+  )
+```
+
+# Plot stylised correlation matrix
+
+```{r}
+# heirarchical cluster based on prtb subset
+ord <- corrplot::corrMatOrder(cor_gene, order = "hclust")
+cor_gene <- cor_gene[ord, ord]  # lock the order
+
+cor_gene_exag <- sign(cor_gene) * abs(cor_gene)^0.6
+stylised_corr_matrix <- suppressMessages(corrplot::corrplot(cor_gene_exag,
+                                    type = "full",
+                                    order = "original",
+                                    method = "color",
+                                    col = cols_7,
+                                    diag = FALSE,
+                                    na.label = "square",
+                                    na.label.col = "white",
+                                    tl.cex = 0.5,
+                                    tl.pos  = "n", 
+                                    cl.pos = "n",
+                                    mar = c(0, 0, 3, 0),
+                                    main = "Pearson correlation matrix"))
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
+```

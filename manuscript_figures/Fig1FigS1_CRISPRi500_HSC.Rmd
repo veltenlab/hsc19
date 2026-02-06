@@ -1,0 +1,1186 @@
+---
+title: "Make plots for Figure 1 and Figure S1"
+author: "Joe Bowness"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+params:
+  rmd: "Fig1FigS1_CRISPRi500_HSC"
+abstract:
+output_dir: "/home/jbowness/cluster/jbowness/CRISPRi500/HSC/clean_analysis/manuscript/"
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+    code_folding: hide
+    toc_depth: 4
+    toc_float:
+      collapsed: false
+    highlight: pygments
+editor_options:
+  chunk_output_type: console
+---
+## Required packages
+
+```{r, message=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(tidyr)
+library(patchwork)
+library(edgeR)
+library(stringr)
+library(Seurat)
+```
+
+## set working directory
+
+```{r}
+setwd("/home/jbowness/cluster/jbowness/CRISPRi500/HSC/clean_analysis/")
+```
+
+## load files (vector counts and seurat object)
+
+- Vector counts was made using the guide-counter tool (fulcrumgenomics) via count_guides.sh bash script from command line. 
+- Seurat object was made in clean_analysis/create_seurat_obj.Rmd
+
+```{r}
+# load vector counts output from guide-counter
+c500_vector_counts <- read_delim("~/cluster/jbowness/CRISPRi500/vector/CRISPRi500_count/c500_guide_counts.counts.txt", 
+                                        delim = "\t", escape_double = FALSE, trim_ws = TRUE)
+colnames(c500_vector_counts)[3:4] <- c("c500_D_freq","c500_b_freq")
+
+# load seurat object
+CRISPRi500_HSC_WTx <- readRDS("/home/jbowness/cluster/jbowness/CRISPRi500/HSC/clean_analysis/seurat_objects/CRISPRi500_HSC_WTx_corrected.RDS")
+
+# set 5X genes
+genes_at_5X <- c("Meis1","Myc","Myb","Runx1","Fos","Mecom","Pbx1","Gata2","Spi1","Ikzf1",
+                 "Npm1","Fli1","Tal1","Erg","Ezh2","Gata1","Dnmt3a","Cebpa","Setdb1","Hoxb5")
+```
+
+# pie charts of genes included in library
+
+- 5 genes are missing from the table (all TFs) - Cdx4, Foxa1, Rxrg, Spdef, Tfap2
+- "None" list include 3 TFs and 24 coregulators/chromatin factors
+- I made the final pie chart of proportions TF vs Chromatin Factor vs Haem in excel.
+
+```{r}
+gene_selection <- read_csv("~/cluster/jbowness/CandidateGeneSelection/GeneSelection_CRISPRi_Weighting_240322_JSS.csv")
+
+gene_selection_include <- subset(gene_selection, `final inclusion` == T)
+gene_selection_GOsummary <- as.data.frame(table(gene_selection_include$GO_summary))
+gene_selection_GOsummary
+```
+
+# guide distribution in vector
+
+```{r}
+# add extra column of 5X to c500_vector_counts
+c500_vector_counts$at_X5 <- c500_vector_counts$gene %in% genes_at_5X
+
+# plot guide frequency with quantiles
+quantiles <- quantile(c500_vector_counts$c500_D_freq, probs = c(0.05, 0.25, 0.75, 0.95))
+guide_freq_vec <- ggplot(c500_vector_counts, 
+                         aes(x=reorder(guide, c500_D_freq), y=c500_D_freq))  +
+  geom_point(aes(color = at_X5)) +
+  scale_color_manual(values = c("TRUE" = "blue", "FALSE" = "grey")) +
+  labs(color = "guide at X5 (n=80 of 1680)") +
+  theme_classic() +
+  scale_y_log10(breaks = c(quantiles[1], quantiles[2], quantiles[3], quantiles[4]),
+                     labels = c(quantiles[1], quantiles[2], quantiles[3], quantiles[4])) +
+  geom_hline(yintercept = quantiles[1], linetype = "dashed") +
+  geom_hline(yintercept = quantiles[2], linetype = "dashed") +
+  geom_hline(yintercept = quantiles[3], linetype = "dashed") +
+  geom_hline(yintercept = quantiles[4], linetype = "dashed") +
+  labs(title = "Counts of each guide in CRISPRi500 library") +
+    theme(axis.text.x = element_blank()) +
+    theme(axis.ticks.x = element_blank()) +
+  theme(legend.position = "bottom")
+
+guide_freq_vec
+```
+
+```{r, eval=FALSE}
+# save plot
+ggsave( filename = "manuscript/fig1/guide_freq_CRISPRi500_vec.pdf",
+        plot     = guide_freq_vec,
+        width    = 8,
+        height   = 5,
+        units    = "in"
+        )
+
+```
+
+# cell state UMAP
+
+```{r}
+cellstate_UMAP <- DimPlot(CRISPRi500_HSC_WTx,
+                          reduction = "umap", group.by = 'cellstate') + scale_color_brewer(palette = "Set2") +
+  theme_minimal() +
+  theme(axis.title = element_blank(), 
+        axis.text = element_blank(), 
+        axis.ticks = element_blank(), 
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+cellstate_UMAP
+```
+
+```{r, eval=FALSE}
+# save plot
+ggsave( filename = "manuscript/figs/umap_cellstate.pdf",
+        plot     = cellstate_UMAP,
+        width    = 7.8,
+        height   = 6,
+        units    = "in"
+        )
+
+```
+
+# marker gene expression UMAPs
+
+```{r}
+DefaultAssay(CRISPRi500_HSC_WTx) <- "SCT"
+marker_genes <- c("Hlf","Mecom","Ly6a","Kit","Mpo","Ctss","Itga2b","Gata2","Pf4")
+marker_plots <- lapply(marker_genes, function(feature) {
+  FeaturePlot(
+    CRISPRi500_HSC_WTx,
+    features = feature,
+    max.cutoff = "q95"
+  ) +
+    theme(axis.line = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          axis.title = element_blank())
+})
+
+marker_gene_UMAP <- wrap_plots(marker_plots, ncol=3)
+marker_gene_UMAP
+
+```
+
+```{r, eval=FALSE}
+# save plot
+# ggsave( filename = "manuscript/fig1/umaps_markergenes.pdf",
+#         plot     = marker_gene_UMAP,
+#         width    = 9,
+#         height   = 10,
+#         units    = "in"
+#         )
+
+ggsave( filename = "manuscript/fig1/umaps_markergenes_more.pdf",
+        plot     = marker_gene_UMAP,
+        width    = 13,
+        height   = 10,
+        units    = "in"
+        )
+
+
+```
+
+# cell cycle UMAP
+
+```{r}
+#plot cell cycle scores
+cellcycle_UMAP <- DimPlot(CRISPRi500_HSC_WTx,  reduction = "umap", 
+                          group.by = 'Phase', label=FALSE) +
+  theme_minimal() +
+  theme(axis.title = element_blank(), 
+        axis.text = element_blank(), 
+        axis.ticks = element_blank(), 
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+cellcycle_UMAP
+```
+
+```{r, eval=FALSE}
+# save plot
+ggsave( filename = "manuscript/fig1/umap_cellcycle.pdf",
+        plot     = cellcycle_UMAP,
+        width    = 7.8,
+        height   = 6,
+        units    = "in"
+        )
+
+```
+
+# guide detection UMAP
+
+```{r}
+## add guide count to seurat object
+guides <- data.frame(CRISPRi500_HSC_WTx@meta.data[,c("guide_idents")])
+rownames(guides) <- rownames(CRISPRi500_HSC_WTx@meta.data)
+colnames(guides) <- "guide_id"
+guides$guide_id[is.na(guides$guide_id)] <- ""
+
+guides$guide_count <- sapply(strsplit(guides$guide_id, ", "), length) #count the number of guides in each row
+summary_counts <- as.data.frame(table(guides$guide_count))
+
+CRISPRi500_HSC_WTx$guide_count <- guides$guide_count #add to metadata
+
+#plot 0, 1 and 2+ on umap
+guides$guide_count_simple <- guides %>%
+  mutate(guide_count = ifelse(guide_count > 1, "2+", as.character(guide_count)))
+
+CRISPRi500_HSC_WTx$guide_count_simple <- guides$guide_count_simple[,2]
+
+guide_count_umap <- DimPlot(CRISPRi500_HSC_WTx, reduction = "umap",
+                            group.by = "guide_count_simple", label = FALSE)
+guide_count_umap <- guide_count_umap + theme_minimal() +
+        theme(axis.title = element_blank(), axis.text = element_blank(), axis.ticks = element_blank(),
+              panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+              plot.title = element_text(hjust = 0.5,  face = "bold", size = 8)) +
+  scale_color_manual(values = c("coral1", "darkslategray3", "blue"))
+guide_count_umap
+```
+
+
+```{r, eval=FALSE}
+# save plot
+ggsave( filename = "manuscript/figs/umap_guidedetection.pdf",
+        plot     = guide_count_umap,
+        width    = 7.8,
+        height   = 6,
+        units    = "in"
+        )
+```
+
+# guide detection barplot
+
+```{r}
+## get and count guide_idents from seurat object
+guides <- data.frame(CRISPRi500_HSC_WTx@meta.data[,c("guide_idents")])
+rownames(guides) <- rownames(CRISPRi500_HSC_WTx@meta.data)
+colnames(guides) <- "guide_id"
+guides$guide_id[is.na(guides$guide_id)] <- ""
+
+guides$guide_count <- sapply(strsplit(guides$guide_id, ", "), length) #count the number of guides in each row
+summary_counts <- as.data.frame(table(guides$guide_count))
+
+#group together 3+ and plot
+colnames(summary_counts) <- c("num_guides","freq")
+summary_counts$num_guides <- as.numeric(summary_counts$num_guides) - 1
+
+summary_counts_grouped <- summary_counts %>%
+  mutate(num_guides = ifelse(num_guides > 2, "3+", as.character(num_guides))) %>%
+  group_by(num_guides) %>%
+  summarise(freq = sum(freq), .groups = "drop")
+
+guide_count_barplot <- ggplot(summary_counts_grouped, aes(x = factor(num_guides), y = freq/1000)) +
+  geom_bar(stat = "identity", fill = "#2c73cf", color = "black") +
+  labs(
+    title = "CRISPRi500 HSC guide detection",
+    x = "guides / cell",
+    y = "Number of cells (x10^3)"
+  ) +
+  theme_classic() +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        axis.text.x = element_text(size = 18),
+        axis.text.y = element_text(size = 18))
+guide_count_barplot
+```
+
+
+```{r, eval=FALSE}
+# save plot
+ggsave( filename = "manuscript/figs/barplot_guidedetection.pdf",
+        plot     = guide_count_barplot,
+        width    = 4.5,
+        height   = 6,
+        units    = "in"
+        )
+```
+
+```{r}
+# guide count by cell state
+guides_cellstate <- data.frame(CRISPRi500_HSC_WTx@meta.data[,c("guide_idents","cellstate")])
+guides_cellstate$has_guide <- ifelse(is.na(guides_cellstate$guide_idents) |
+                                     guides_cellstate$guide_idents == "", 0, 1)
+percent_guides <- guides_cellstate %>%
+  group_by(cellstate) %>%
+  summarise(
+    total_cells = n(),
+    cells_with_guide = sum(has_guide),
+    pct_with_guide = 100 * cells_with_guide / total_cells
+  )
+percent_guides
+```
+
+
+# CRISPRi on-target repression
+
+## on-target by gene
+
+- Use FindMarkers on the SCT-adjusted (vst) counts
+- Save as dataframe
+
+```{r}
+# make metadata column of singletarget
+CRISPRi500_HSC_WTx$singletarget <- sub("-.*", "", CRISPRi500_HSC_WTx$single_guides)
+CRISPRi500_HSC_WTx$singletarget[grepl("^(ONE|NO)", CRISPRi500_HSC_WTx$singletarget)] <- "Non-targeting"
+
+# get information on cells per gene perturbation
+cells_per_gene_perturbation <- data.frame(table(CRISPRi500_HSC_WTx$singletarget))
+colnames(cells_per_gene_perturbation) <- c("perturbation","nCells")
+```
+
+```{r, eval=FALSE}
+#initialise empty de data frame
+CRISPRi_ontarget_gene <- data.frame(matrix(nrow = 0, ncol = 8))
+colnames(CRISPRi_ontarget_gene) <- c("perturbation","nCells_gene","nCells_NT","p_val","avg_log2FC","pct.1","pct.2","p_val_adj")
+
+genes_to_test <- unique(CRISPRi500_HSC_WTx@meta.data$singletarget)
+genes_to_test <- genes_to_test[genes_to_test != "Non-targeting"]
+genes_to_test <- genes_to_test[genes_to_test != ""]
+genes_to_test <- na.omit(genes_to_test)
+# remove genes that dont work...
+genes_to_test <- genes_to_test[genes_to_test != "Pou5f1"] 
+genes_to_test <- genes_to_test[genes_to_test != "Cdx4"]
+genes_to_test <- genes_to_test[genes_to_test != "Sars"]
+
+#on-target gene repression by target
+
+for (gene_id in genes_to_test) {
+    de <- Seurat::FindMarkers(CRISPRi500_HSC_WTx, group.by = "singletarget",
+                    logfc.threshold = "0", min.pct = "0",
+                    ident.1 = gene_id, ident.2 = "Non-targeting",
+                    features = gene_id)
+    de$perturbation <- gene_id
+    de$nCells_gene <- subset(cells_per_gene_perturbation, perturbation == gene_id)$nCells
+    de$nCellsNT <- subset(cells_per_gene_perturbation, perturbation == "Non-targeting")$nCells
+    CRISPRi_ontarget_gene <- rbind(CRISPRi_ontarget_gene, de)
+}
+
+# add for final 3 targets: Pou5f1, Cdx4 are gone from the SCT assay because are there almost 0 counts from these genes
+table(GetAssayData(CRISPRi500_HSC_WTx, assay = "RNA", slot = "counts")["Pou5f1", ])
+table(GetAssayData(CRISPRi500_HSC_WTx, assay = "RNA", slot = "counts")["Cdx4", ])
+
+# Sars is actually called Sars1
+de <- Seurat::FindMarkers(CRISPRi500_HSC_WTx, group.by = "singletarget",
+                          logfc.threshold = "0", min.pct = "0",
+                          ident.1 = "Sars", ident.2 = "Non-targeting",
+                          features = "Sars1")
+de$perturbation <- "Sars1"
+de$nCells_gene <- subset(cells_per_gene_perturbation, perturbation == gene_id)$nCells
+de$nCellsNT <- subset(cells_per_gene_perturbation, perturbation == "Non-targeting")$nCells
+CRISPRi_ontarget_gene <- rbind(CRISPRi_ontarget_gene, de)
+```
+
+```{r, eval=FALSE}
+#write to file
+write.csv(CRISPRi_ontarget_gene, 
+          file = "~/cluster/jbowness/CRISPRi500/HSC/clean_analysis/manuscript/int_files/CRISPRi500_HSC_ontarget_repression_gene.csv", row.names = FALSE)
+```
+
+## on-target by guide
+
+- generate table of on-target effects of guides using FindMarkers on SCT-adjusted counts
+- FindMarkers only works with 3+ cells, so remove guides which have fewer than 3 cells 
+
+```{r}
+# mutate to make a new metadata column single_guides_NT with "Non-targeting" for all controls
+CRISPRi500_HSC_WTx$single_guides_NT <- CRISPRi500_HSC_WTx$single_guides
+CRISPRi500_HSC_WTx$single_guides_NT[grepl("^(ONE-|NO-)", CRISPRi500_HSC_WTx$single_guides_NT)] <- "Non-targeting"
+
+# get information on cells per guide
+cells_per_guide <- data.frame(table(CRISPRi500_HSC_WTx$single_guides_NT))
+colnames(cells_per_guide) <- c("guide","nCells")
+```
+
+```{r, eval=FALSE}
+#guides to loop through - reduce to only those with 2+
+cells_per_guide_sub <- cells_per_guide[cells_per_guide$nCells > 2,]
+guides_to_test <- na.omit(cells_per_guide_sub$guide)
+guides_to_test <- guides_to_test[guides_to_test != ""]
+guides_to_test <- guides_to_test[!grepl("Non-targeting", guides_to_test)]
+
+# associate guides with perturbed gene
+guides_to_test <- as.data.frame(guides_to_test)
+guides_to_test$perturbation <- sub("-CRISPRi-sgRNA-[123]$", "", guides_to_test$guides_to_test)
+guides_to_test$perturbation[guides_to_test$perturbation == "Sars"] <- "Sars1"
+
+guides_to_test <- subset(guides_to_test, perturbation != "Pou5f1")
+guides_to_test <- subset(guides_to_test, perturbation != "Cdx4")
+
+#initialise empty de data frame
+CRISPRi_ontarget_guide <- data.frame(matrix(nrow = 0, ncol = 9))
+colnames(CRISPRi_ontarget_guide) <- c("guide","perturbation","nCells_guide","nCells_NT","p_val","avg_log2FC","pct.1","pct.2","p_val_adj")
+
+for (i in seq_len(nrow(guides_to_test))) {
+  guide_id <- guides_to_test$guide[i]          
+  perturbation <- guides_to_test$perturbation[i]
+  
+  #test for on-target repression against "NO" and "ONE" NT controls
+    de <- Seurat::FindMarkers(CRISPRi500_HSC_WTx, group.by = "single_guides_NT",
+                    logfc.threshold = "0", min.pct = "0",
+                    ident.1 = guide_id, ident.2 = "Non-targeting",
+                    features = perturbation)
+  # add to df
+    de$guide <- guide_id
+    de$perturbation <- perturbation
+    de$nCells_guide <- subset(cells_per_guide_sub, guide == guide_id)$nCells
+    de$nCellsNT <- subset(cells_per_guide_sub, guide == "Non-targeting")$nCells
+    CRISPRi_ontarget_guide <- rbind(CRISPRi_ontarget_guide, de)
+}
+```
+
+```{r, eval=FALSE}
+#write to file
+write.csv(CRISPRi_ontarget_guide, file = "~/cluster/jbowness/CRISPRi500/HSC/clean_analysis/manuscript/int_files/CRISPRi500_HSC_ontarget_repression_guide.csv", row.names = FALSE)
+```
+
+## on-target plot all genes
+
+```{r}
+# load on_target table
+CRISPRi_ontarget_gene <- read_csv("~/cluster/jbowness/CRISPRi500/HSC/clean_analysis/manuscript/int_files/CRISPRi500_HSC_ontarget_repression_gene.csv")
+
+CRISPRi_ontarget_gene$p_val_adj <- p.adjust(CRISPRi_ontarget_gene$p_val, method = "BH") # multiple testing correction
+CRISPRi_ontarget_gene_sortLog2FC <- CRISPRi_ontarget_gene %>%
+  arrange(avg_log2FC) %>%
+  mutate(row_order = row_number(),
+         sig = ifelse(p_val_adj < 0.05, "p < 0.05", "p >= 0.05"))
+
+df <- CRISPRi_ontarget_gene_sortLog2FC %>%
+  mutate(
+    sig_dir = case_when(
+      p_val_adj < 0.05 & avg_log2FC > 0 ~ "Up",
+      p_val_adj < 0.05 & avg_log2FC < 0 ~ "Down",
+      TRUE                          ~ "Not significant"
+    )
+  )
+
+# counts for legend
+n_up   <- sum(df$sig_dir == "Up", na.rm = TRUE)
+n_down <- sum(df$sig_dir == "Down", na.rm = TRUE)
+n_ns   <- sum(df$sig_dir == "Not significant", na.rm = TRUE)
+
+legend_labels <- c(
+  "Up"   = paste0("Up (n=", n_up, ")"),
+  "Down" = paste0("Down (n=", n_down, ")"),
+  "Not significant"  = paste0("Not significant (n=", n_ns, ")")
+)
+
+on_target_repression_all_genes <- ggplot(df, aes(x = row_order, y = avg_log2FC)) +
+  # draw non-sig first (behind)
+  geom_point(
+    data = df %>% filter(sig_dir == "Not significant"),
+    aes(color = sig_dir),
+    size = 0.5
+  ) +
+  # then significant points on top
+  geom_point(
+    data = df %>% filter(sig_dir != "Not significant"),
+    aes(color = sig_dir),
+    size = 0.5
+  ) +
+  geom_hline(yintercept = mean(df$avg_log2FC, na.rm = TRUE), linetype = "dashed") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  scale_y_continuous(
+    breaks = function(x) seq(floor(min(x)), ceiling(max(x)), by = 2),  # ticks/labels every 2
+    minor_breaks = function(x) seq(floor(min(x)), ceiling(max(x)), by = 1) # faint lines every 1
+  ) +
+  scale_color_manual(
+    values = c("Up" = "darkred", "Down" = "#2c73cf", "Not significant" = "#a9aaab"),
+    labels = legend_labels,
+    breaks = c("Up", "Down", "Not significant")
+  ) +
+  labs(x = "Perturbed genes", y = "avg_log2FC", color = NULL) +
+  theme_minimal() +
+  theme(
+    # horizontal grid lines: major + faint minor
+    panel.grid.major.y = element_line(color = "grey85", linewidth = 0.3),
+    panel.grid.minor.y = element_line(color = "grey90", linewidth = 0.2),
+
+    # remove ALL vertical grid lines
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+
+    # remove x axis ticks + labels (and keep no vertical axis line artifacts)
+    axis.text.x  = element_blank(),
+    axis.ticks.x = element_blank(),
+
+    # optional: keep a border around the panel
+    panel.border = element_rect(color = "grey", fill = NA),
+
+    plot.title = element_text(hjust = 0.5)
+  )
+on_target_repression_all_genes
+```
+
+
+```{r, eval=FALSE}
+# save to file
+ggsave(
+  filename = "/home/jbowness/cluster/jbowness/CRISPRi500/HSC/clean_analysis/manuscript/fig1/on_target_repression_all_genes.pdf",
+  plot     = on_target_repression_all_genes,
+  width    = 6,   
+  height   = 4, 
+  units    = "in"
+)
+```
+
+## on-target plot 5X genes
+
+```{r}
+# load results from guide and gene
+CRISPRi_ontarget_gene <- read_csv("~/cluster/jbowness/CRISPRi500/HSC/clean_analysis/manuscript/int_files/CRISPRi500_HSC_ontarget_repression_gene.csv")
+CRISPRi_ontarget_guide <- read_csv("~/cluster/jbowness/CRISPRi500/HSC/clean_analysis/manuscript/int_files/CRISPRi500_HSC_ontarget_repression_guide.csv")
+
+#subset ontarget (by guide) to genes at 5X
+CRISPRi_ontarget_5X <- subset(CRISPRi_ontarget_guide, perturbation %in% genes_at_5X)
+
+# add overall log2fold per gene 
+CRISPRi_ontarget_gene_5X <- CRISPRi_ontarget_gene[,c("perturbation","avg_log2FC","nCells_gene","p_val")]
+colnames(CRISPRi_ontarget_gene_5X) <- c("perturbation","avg_log2FC_gene","nCells_gene","p_val_gene")
+
+CRISPRi_ontarget_5X <- merge(CRISPRi_ontarget_5X, CRISPRi_ontarget_gene_5X, by = "perturbation")
+
+CRISPRi_ontarget_5X <- CRISPRi_ontarget_5X %>%
+  arrange(avg_log2FC_gene) %>%  
+  mutate(perturbation = factor(perturbation, levels = unique(perturbation)))
+
+# make plot
+CRISPRi500_HSC_on_target_plot <- ggplot(CRISPRi_ontarget_5X) +
+  geom_point(aes(x = perturbation, y = avg_log2FC), shape = 4) +
+  geom_point(
+    aes(
+      x = perturbation,
+      y = avg_log2FC_gene,
+      color = p_val_gene < 0.05,
+      size  = nCells_gene
+    )
+  ) +
+  ylab("on-target log2FC") +
+  ggtitle("CRISPRi on-target gene inactivation") +
+  ylim(-4.5, 1.5) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  theme_minimal() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA),
+  ) +
+  scale_color_manual(
+    values = c(`TRUE` = "#2c73cf", `FALSE` = "#a9aaab"),
+    labels = c(`TRUE` = "p < 0.05", `FALSE` = "p > 0.05"),
+    name   = NULL
+  ) +
+  scale_size_continuous(name = "Cell number") +
+  guides(
+    color = guide_legend(order = 1, override.aes = list(size = 4)),
+    size  = guide_legend(order = 2)
+  )
+CRISPRi500_HSC_on_target_plot
+```
+
+```{r, eval=FALSE}
+ggsave(
+  filename = "manuscript/fig1/on_target_repression_5X.pdf",
+  plot     = CRISPRi500_HSC_on_target_plot,
+  width    = 8,   
+  height   = 4, 
+  units    = "in"
+)
+```
+
+## on-target all order by detection and nCells
+
+- In other whole-genome CRISPRi Perturb-seq data sets eg. Replogle (K562s), Zhu (T-cells), on-target repression depends on detection of the target gene. So we might expect worse on-target repression sensitivity for very low-expressed gene targets and/or where we have very few cells for the perturbation. 
+
+```{r}
+# load on_target table by gene, and label significanc, as above ----
+CRISPRi_ontarget_gene <- read_csv("~/cluster/jbowness/CRISPRi500/HSC/clean_analysis/manuscript/int_files/CRISPRi500_HSC_ontarget_repression_gene.csv")
+
+CRISPRi_ontarget_gene$p_val_adj <- p.adjust(CRISPRi_ontarget_gene$p_val, method = "BH") # multiple testing correction
+CRISPRi_ontarget_gene_sortLog2FC <- CRISPRi_ontarget_gene %>%
+  arrange(avg_log2FC) %>%
+  mutate(row_order = row_number(),
+         sig = ifelse(p_val_adj < 0.05, "p < 0.05", "p >= 0.05"))
+
+df <- CRISPRi_ontarget_gene_sortLog2FC %>%
+  mutate(
+    sig_dir = case_when(
+      p_val_adj < 0.05 & avg_log2FC > 0 ~ "Up",
+      p_val_adj < 0.05 & avg_log2FC < 0 ~ "Down",
+      TRUE                          ~ "Not significant"
+    )
+  )
+
+# make same plot as above but ordered by number of cells per gene perturbation ----
+df$row_order_ncells <- rank(df$nCells_gene, ties.method = "first")
+on_target_repression_all_genes_by_ncells <- ggplot(df, aes(x = row_order_ncells, y = avg_log2FC)) +
+  # draw non-sig first (behind)
+  geom_point(
+    data = df %>% filter(sig_dir == "Not significant"),
+    aes(color = sig_dir),
+    size = 0.5
+  ) +
+  # then significant points on top
+  geom_point(
+    data = df %>% filter(sig_dir != "Not significant"),
+    aes(color = sig_dir),
+    size = 0.5
+  ) +
+  geom_hline(yintercept = mean(df$avg_log2FC, na.rm = TRUE), linetype = "dashed") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  scale_y_continuous(
+    breaks = function(x) seq(floor(min(x)), ceiling(max(x)), by = 2),  # ticks/labels every 2
+    minor_breaks = function(x) seq(floor(min(x)), ceiling(max(x)), by = 1) # faint lines every 1
+  ) +
+  scale_color_manual(
+    values = c("Up" = "darkred", "Down" = "#2c73cf", "Not significant" = "#a9aaab"),
+    labels = legend_labels,
+    breaks = c("Up", "Down", "Not significant")
+  ) +
+  labs(x = "Perturbed genes", y = "avg_log2FC", color = NULL) +
+  theme_minimal() +
+  theme(
+    # horizontal grid lines: major + faint minor
+    panel.grid.major.y = element_line(color = "grey85", linewidth = 0.3),
+    panel.grid.minor.y = element_line(color = "grey90", linewidth = 0.2),
+
+    # remove ALL vertical grid lines
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+
+    # remove x axis ticks + labels (and keep no vertical axis line artifacts)
+    axis.text.x  = element_blank(),
+    axis.ticks.x = element_blank(),
+
+    # optional: keep a border around the panel
+    panel.border = element_rect(color = "grey", fill = NA),
+
+    plot.title = element_text(hjust = 0.5)
+  )
+on_target_repression_all_genes_by_ncells
+
+# make same plot as above but ordered by detection of target gene in controls ---- 
+df$row_order_detection <- rank(df$pct.2, ties.method = "first")
+on_target_repression_all_genes_by_detection <- ggplot(df, aes(x = row_order_detection, y = avg_log2FC)) +
+  # draw non-sig first (behind)
+  geom_point(
+    data = df %>% filter(sig_dir == "Not significant"),
+    aes(color = sig_dir),
+    size = 0.5
+  ) +
+  # then significant points on top
+  geom_point(
+    data = df %>% filter(sig_dir != "Not significant"),
+    aes(color = sig_dir),
+    size = 0.5
+  ) +
+  geom_hline(yintercept = mean(df$avg_log2FC, na.rm = TRUE), linetype = "dashed") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  scale_y_continuous(
+    breaks = function(x) seq(floor(min(x)), ceiling(max(x)), by = 2),  # ticks/labels every 2
+    minor_breaks = function(x) seq(floor(min(x)), ceiling(max(x)), by = 1) # faint lines every 1
+  ) +
+  scale_color_manual(
+    values = c("Up" = "darkred", "Down" = "#2c73cf", "Not significant" = "#a9aaab"),
+    labels = legend_labels,
+    breaks = c("Up", "Down", "Not significant")
+  ) +
+  labs(x = "Perturbed genes", y = "avg_log2FC", color = NULL) +
+  theme_minimal() +
+  theme(
+    # horizontal grid lines: major + faint minor
+    panel.grid.major.y = element_line(color = "grey85", linewidth = 0.3),
+    panel.grid.minor.y = element_line(color = "grey90", linewidth = 0.2),
+
+    # remove ALL vertical grid lines
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+
+    # remove x axis ticks + labels (and keep no vertical axis line artifacts)
+    axis.text.x  = element_blank(),
+    axis.ticks.x = element_blank(),
+
+    # optional: keep a border around the panel
+    panel.border = element_rect(color = "grey", fill = NA),
+
+    plot.title = element_text(hjust = 0.5)
+  )
+on_target_repression_all_genes_by_detection
+
+```
+
+# essentiality analysis
+
+## statistical test
+
+```{r}
+# transform counts from vector into proportions
+c500_vector_counts$c500_D_prop <- c500_vector_counts$c500_D_freq / sum(c500_vector_counts$c500_D_freq)
+c500_vector_counts$c500_b_prop <- c500_vector_counts$c500_b_freq / sum(c500_vector_counts$c500_b_freq)
+c500_vector_counts$guide <- gsub("_", "-", c500_vector_counts$guide)
+
+# extract numbers of cells for each guide from seurat object
+c500_HSPC_counts <- data.frame(table(CRISPRi500_HSC_WTx$single_guides))
+colnames(c500_HSPC_counts) <- c("guide","ncells_HSPC")
+c500_HSPC_counts <- subset(c500_HSPC_counts, guide != "")
+
+# CRISPRi500 guides as proportions
+CRISPRi500_proportions <- merge(c500_vector_counts, c500_HSPC_counts, by="guide", all=TRUE)
+CRISPRi500_proportions$ncells_HSPC[is.na(CRISPRi500_proportions$ncells_HSPC)] <- 0
+CRISPRi500_proportions$HSPC_prop <- CRISPRi500_proportions$ncells_HSPC / sum(CRISPRi500_proportions$ncells_HSPC)
+cor(CRISPRi500_proportions$HSPC_prop, CRISPRi500_proportions$c500_D_prop)
+
+## split treat each guide as a replicate for edgeR 
+CRISPRi500_proportions_splitguides <- CRISPRi500_proportions %>%
+  select(c("gene","guide","c500_D_freq","ncells_HSPC"))  %>%
+  mutate( guide_rep = paste0("guide", str_extract(guide, "\\d$")))
+
+CRISPRi500_proportions2 <- CRISPRi500_proportions_splitguides %>%
+  mutate(
+    guide_rep = paste0("guide", str_extract(guide, "\\d$")),
+    vec_guide1 = if_else(guide_rep == "guide1", c500_D_freq, NA_integer_),
+    vec_guide2 = if_else(guide_rep == "guide2", c500_D_freq, NA_integer_),
+    vec_guide3 = if_else(guide_rep == "guide3", c500_D_freq, NA_integer_)
+  )  %>%
+  mutate(
+    guide_rep = paste0("guide", str_extract(guide, "\\d$")),
+    HSPC_guide1 = if_else(guide_rep == "guide1", ncells_HSPC, NA_integer_),
+    HSPC_guide2 = if_else(guide_rep == "guide2", ncells_HSPC, NA_integer_),
+    HSPC_guide3 = if_else(guide_rep == "guide3", ncells_HSPC, NA_integer_)
+  )
+CRISPRi500_proportions2 <- CRISPRi500_proportions2 %>%
+  select(c("gene","vec_guide1","vec_guide2","vec_guide3","HSPC_guide1","HSPC_guide2","HSPC_guide3"))
+
+CRISPRi500_proportions_splitguides <- CRISPRi500_proportions2 %>%
+  group_by(gene) %>%
+  summarise(
+    vec_guide1 = sum(vec_guide1, na.rm = TRUE),
+    vec_guide2 = sum(vec_guide2, na.rm = TRUE),
+    vec_guide3 = sum(vec_guide3, na.rm = TRUE),
+    HSPC_guide1 = sum(HSPC_guide1, na.rm = TRUE),
+    HSPC_guide2 = sum(HSPC_guide2, na.rm = TRUE),
+    HSPC_guide3 = sum(HSPC_guide3, na.rm = TRUE),
+    .groups = "drop"
+  )
+rm(CRISPRi500_proportions2)
+
+# make into matrix
+CRISPRi500_proportions_splitguides_mat <- as.matrix(CRISPRi500_proportions_splitguides[, c("vec_guide1", "vec_guide2", "vec_guide3",
+                                  "HSPC_guide1", "HSPC_guide2", "HSPC_guide3")])
+rownames(CRISPRi500_proportions_splitguides_mat) <- CRISPRi500_proportions_splitguides$gene
+
+# set conditions
+group <- factor(rep(c("vec", "HSPC"), each = 3), levels = c("vec", "HSPC"))
+pair <- factor(rep(c("guide1", "guide2", "guide3"), 2))  # repeated for vec and HSPC
+# make dge object
+dge <- DGEList(counts = CRISPRi500_proportions_splitguides_mat, group = group)
+dge <- calcNormFactors(dge)
+# set up paired design
+design <- model.matrix(~pair + group)
+# dispersion and fit model
+dge <- estimateDisp(dge, design)
+fit <- glmFit(dge, design)
+lrt <- glmLRT(fit, coef = "groupHSPC")
+# perform DE
+results <- topTags(lrt, n = Inf)$table
+results$FDR <- p.adjust(results$PValue, method = "BH")
+results$signif <- results$PValue < 0.01
+```
+
+## volcano of EdgeR results
+
+```{r}
+# Convert results to a data frame if not already
+results$gene <- rownames(results)
+
+# Add -log10(p-value) for plotting
+results$logP <- -log10(results$PValue)
+results$color <- NULL
+results <- results %>%
+  mutate(color = case_when(
+    signif == T & logFC > 1  ~ "up",
+    signif == T & logFC < -1  ~ "down",
+    signif == F ~ "neutral"
+  ))
+
+# volcano plot - with gene search?
+essentiality_volcano <- ggplot(results, aes(x = logFC, y = logP, color = color, text = gene)) +
+  geom_point(alpha = 0.7) +
+  scale_color_manual(values = c("up" = "red3", "down" = "blue3", "neutral" = "gray")) +
+     geom_text_repel(
+       data = subset(results, PValue < 0.01 | logFC > 1.4),
+       aes(label = gene), 
+       color = "black", 
+       size = 4,
+       max.overlaps = Inf,
+       box.padding = 0.35,
+       point.padding = 0.3 ) + 
+  labs(
+    title = "Enrichment of guide in HSPC vs vector (Essentiality test)",,
+    x = "log2 Fold Change",
+    y = "-log10(P-value)"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA),
+    axis.text.x = element_text(size = 16),
+    axis.text.y = element_text(size = 16),
+    axis.ticks = element_line(color = "black"),   
+    axis.ticks.length = unit(0.2, "cm")     
+  )
+
+essentiality_volcano
+```
+
+```{r, eval=FALSE}
+# save plot
+ggsave(
+  filename = "manuscript/figs/volcano_essentiality_analysis.pdf",
+  plot     = essentiality_volcano,
+  width    = 7,   
+  height   = 6, 
+  units    = "in"
+)
+```
+
+## barplot top essential genes
+
+```{r}
+## bar chart of top essential genes 
+genes_essential <- results %>%
+  filter(logFC < 0) %>%
+  arrange(PValue) %>%
+  slice_head(n = 15)
+genes_essential <- rownames(genes_essential)
+
+CRISPRi500_proportions_essential <- subset(CRISPRi500_proportions, gene %in% genes_essential)
+
+# make long format
+CRISPRi500_proportions_essential_long <- CRISPRi500_proportions_essential %>%
+  select(gene, guide, c500_D_prop, HSPC_prop) %>%
+  pivot_longer(cols = c(c500_D_prop, HSPC_prop),
+               names_to = "sample",
+               values_to = "proportion")
+
+# order guides
+guide_order <- CRISPRi500_proportions_essential_long %>%
+  filter(sample == "c500_D_prop") %>%
+  arrange(gene, desc(proportion)) %>%
+  group_by(gene) %>%
+  mutate(ordered_guide = factor(guide, levels = unique(guide))) %>%
+  ungroup() %>%
+  select(gene, guide, ordered_guide)
+
+# merge back into main data
+CRISPRi500_proportions_essential_long <- CRISPRi500_proportions_essential_long %>%
+  left_join(guide_order, by = c("gene", "guide"))
+
+# plot vector vs num of HSPCs
+essential_genes_barplot <- ggplot(
+    subset(CRISPRi500_proportions_essential_long,sample %in% c("c500_D_prop", "HSPC_prop")),
+    aes(x = ordered_guide, y = proportion*100, fill = sample)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), alpha = 0.9) +
+  facet_wrap(~ gene, scales = "free_x", nrow = 1) +
+  scale_fill_manual(values = c("c500_D_prop" = "navy", "HSPC_prop" = "#56B4E9"),
+                    labels = c("c500 vector", "HSPC cells")) +
+  labs(x = "Guide", y = "Proportion", fill = "Condition",
+       title = "Guide Abundance in Vector vs HSPC cells") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, size=10, hjust = 1),
+        plot.title = element_text(hjust = 0.5, face = "bold"),
+        axis.text.y = element_text(size = 12),
+        axis.ticks = element_line(color = "black"),   
+        axis.ticks.length = unit(0.2, "cm"),
+        strip.text = element_text(size = 10)
+        )  +
+  scale_x_discrete(
+  labels = function(x) sub("^(.*)-CRISPRi-sgRNA-(\\d+)$", "\\1-\\2", x)
+  ) +
+  scale_y_continuous( expand = c(0.02,0)  )
+
+essential_genes_barplot
+```
+
+```{r, eval=FALSE}
+# save plot
+ggsave(
+  filename = "manuscript/figs/barplot_essential_genes.pdf",
+  plot     = essential_genes_barplot,
+  width    = 12,   
+  height   = 4, 
+  units    = "in"
+)
+```
+
+## barplot top "growth advantage" genes
+
+```{r}
+## bar chart of top essential genes 
+genes_growth_ad <- results %>%
+  filter(logFC > 0) %>%
+  arrange(PValue) %>%
+  slice_head(n = 4)
+genes_growth_ad <- rownames(genes_growth_ad)
+
+CRISPRi500_proportions_growth_ad <- subset(CRISPRi500_proportions, gene %in% genes_growth_ad)
+
+# make long format
+CRISPRi500_proportions_growth_ad_long <- CRISPRi500_proportions_growth_ad %>%
+  select(gene, guide, c500_D_prop, HSPC_prop) %>%
+  pivot_longer(cols = c(c500_D_prop, HSPC_prop),
+               names_to = "sample",
+               values_to = "proportion")
+
+# order guides
+guide_order <- CRISPRi500_proportions_growth_ad_long %>%
+  filter(sample == "c500_D_prop") %>%
+  arrange(gene, desc(proportion)) %>%
+  group_by(gene) %>%
+  mutate(ordered_guide = factor(guide, levels = unique(guide))) %>%
+  ungroup() %>%
+  select(gene, guide, ordered_guide)
+
+# merge back into main data
+CRISPRi500_proportions_growth_ad_long <- CRISPRi500_proportions_growth_ad_long %>%
+  left_join(guide_order, by = c("gene", "guide"))
+
+# plot vector vs num of HSPCs
+growth_ad_genes_barplot <- ggplot(
+    subset(CRISPRi500_proportions_growth_ad_long,sample %in% c("c500_D_prop", "HSPC_prop")),
+    aes(x = ordered_guide, y = proportion*100, fill = sample)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), alpha = 0.9) +
+  facet_wrap(~ gene, scales = "free_x", nrow = 1) +
+  scale_fill_manual(values = c("c500_D_prop" = "darkgreen", "HSPC_prop" = "orange"),
+                    labels = c("c500 vector", "HSPC cells")) +
+  labs(x = "Guide", y = "Proportion", fill = "Condition",
+       title = "Guide Abundance in Vector vs HSPC cells") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, size=12, hjust = 1),
+        plot.title = element_text(hjust = 0.5, face = "bold"),
+        axis.text.y = element_text(size = 14),
+        axis.ticks = element_line(color = "black"),   
+        axis.ticks.length = unit(0.2, "cm"),
+        strip.text = element_text(size = 10)
+        )  +
+  scale_x_discrete(
+  labels = function(x) sub("^(.*)-CRISPRi-sgRNA-(\\d+)$", "\\1-\\2", x),
+  ) +
+  scale_y_continuous( expand = c(0.02,0)  )
+
+growth_ad_genes_barplot
+
+```
+
+```{r, eval=FALSE}
+# save plot
+ggsave(
+  filename = "manuscript/figs/barplot_growth_advantage_genes.pdf",
+  plot     = growth_ad_genes_barplot,
+  width    = 5,   
+  height   = 4, 
+  units    = "in"
+)
+```
+
+
+# individual guides umaps
+
+```{r}
+# function to plot UMAP by guide
+plot_umap_named_guide <- function(seurat_obj, guide_id, colour){
+        seurat_obj$contains_target_guide <- grepl(guide_id, seurat_obj$guide_idents)
+        #plot umap
+        umap_plot <- DimPlot(seurat_obj,
+                          reduction = "umap",
+                          group.by = "contains_target_guide", 
+                          cols = c("grey", colour), label = FALSE)
+        umap_plot <- umap_plot + 
+          geom_point(data = subset(umap_plot$data, contains_target_guide == TRUE), 
+                 aes(x = umap_1, y = umap_2), 
+                 color = colour, size = 0.5) + 
+      ggtitle(guide_id) +
+      theme_minimal() +
+      theme(legend.position = "none",                  
+        axis.title = element_blank(), axis.text = element_blank(), axis.ticks = element_blank(), 
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        plot.title = element_text(hjust = 0.5,  face = "bold", size = 8))
+        return(umap_plot)
+        }
+#blank UMAP (for figures)
+blank_umap <- plot_umap_named_guide(CRISPRi500_HSC_WTx,"XX","black")
+blank_umap
+
+NT3_umap <- plot_umap_named_guide(CRISPRi500_HSC_WTx,"NO-SITE-sgRNA-3","black")
+NT12_umap <- plot_umap_named_guide(CRISPRi500_HSC_WTx,"NO-SITE-sgRNA-12","black")
+NT10_umap <- plot_umap_named_guide(CRISPRi500_HSC_WTx,"NO-SITE-sgRNA-10","black")
+OI5_umap <- plot_umap_named_guide(CRISPRi500_HSC_WTx,"ONE-INTERGENIC-sgRNA-5","black")
+
+Dnmt3a_2_umap <- plot_umap_named_guide(CRISPRi500_HSC_WTx,"Dnmt3a-CRISPRi-sgRNA-2","#3B7A57")
+Spi1_1_umap <- plot_umap_named_guide(CRISPRi500_HSC_WTx,"Spi1-CRISPRi-sgRNA-1","blue2")
+Brd9_2_umap <- plot_umap_named_guide(CRISPRi500_HSC_WTx,"Brd9-CRISPRi-sgRNA-2","red3")
+
+NT_plots_list <- list()
+NT_plots_list[["NT3_umap"]] <- NT3_umap
+#NT_plots_list[["NT10_umap"]] <- NT10_umap
+NT_plots_list[["OI5_umap"]] <- OI5_umap
+NT_plots_list[["NT12_umap"]] <- NT12_umap
+NT_plots_list[["Dnmt3a_2_umap"]] <- Dnmt3a_2_umap
+NT_plots_list[["Spi1_1_umap"]] <- Spi1_1_umap
+NT_plots_list[["Brd9_2_umap"]] <- Brd9_2_umap
+
+
+final_UMAP <- wrap_plots(plotlist = NT_plots_list, ncol = 3, nrow = 2)
+final_UMAP
+```
+
+```{r, eval=FALSE}
+# save plot
+ggsave(
+  filename = "~/cluster/jbowness/CRISPRi500/HSC/clean_analysis/manuscript/fig1/umap_blank.pdf",
+  plot     = blank_umap,
+  width    = 4,   
+  height   = 3.5, 
+  units    = "in"
+)
+
+ggsave(
+  filename = "~/cluster/jbowness/CRISPRi500/HSC/clean_analysis/manuscript/fig1/umaps_guides.pdf",
+  plot     = final_UMAP,
+  width    = 8.8,   
+  height   = 5.5, 
+  units    = "in"
+)
+
+```
+
+# differential abundance non-targting guides
+
+- Make the contingency table as 'counts of test guide' vs 'counts of other control guides'
+
+```{r}
+# extract guide x celltype matrix
+single_guide_by_cellstate <- CRISPRi500_HSC_WTx@meta.data[c("single_guides","singletarget","cellstate")]
+single_guide_by_cellstate <- na.omit(single_guide_by_cellstate)
+single_guide_by_cellstate <- subset(single_guide_by_cellstate, single_guides != "")
+
+# remove "unknown" cellstate (not informative)
+single_guide_by_cellstate <- subset(single_guide_by_cellstate, cellstate != "unknown")
+
+# only NT controls
+single_guide_by_cellstate_NT <- single_guide_by_cellstate %>% filter(singletarget == "Non-targeting")
+
+# enrichment test for the cell states
+results <- data.frame()
+#testguide <- "NO-SITE-sgRNA-3"
+#test_cellstate <- "MegEry"
+
+for (testguide in unique(single_guide_by_cellstate_NT$single_guides)) {
+  for (test_cellstate in unique(single_guide_by_cellstate_NT$cellstate)) {
+    target_guide_by_cellstate <- single_guide_by_cellstate_NT %>% 
+      filter(cellstate == test_cellstate & single_guides == testguide)
+    target_guide_not_cellstate <- subset(single_guide_by_cellstate_NT,
+                                    !(cellstate == test_cellstate) & single_guides == testguide)
+    #make contingency table
+      guide_cellstate_count <- nrow(target_guide_by_cellstate)
+      guide_notcellstate_count <- nrow(target_guide_not_cellstate)
+
+      othercontrol_cellstate_count <- nrow(single_guide_by_cellstate_NT %>% filter(!(single_guides == testguide) & cellstate == test_cellstate) )
+      othercontrol_notcellstate_count <- nrow(single_guide_by_cellstate_NT %>% filter(!(single_guides == testguide) & !(cellstate == test_cellstate )))
+    
+      contingency_mat <- matrix(c(guide_cellstate_count, guide_notcellstate_count, 
+                                  othercontrol_cellstate_count, othercontrol_notcellstate_count), ncol = 2)
+      
+      ## perform chi-squared test
+      #chisq_res <- chisq.test(contingency_mat, correct = TRUE)
+      #odds_ratio <- (guide_cellstate_count * othercontrol_notcellstate_count) / (guide_notcellstate_count * othercontrol_cellstate_count)
+      #p_value <- chisq_res$p.value
+      
+      ## perform Fisher test
+      fisher_res <- fisher.test(contingency_mat)
+      odds_ratio <- fisher_res$estimate
+      p_value <- fisher_res$p.value
+      
+    data <- data.frame(testguide, test_cellstate, odds_ratio, p_value) 
+    results <- rbind(results, data)
+  }
+}
+
+results$p_adj_bh <- p.adjust(results$p_value, method = "BH")  
+results$significant <- results$p_adj_bh < 0.05
+
+# set signficance minimum for plotting
+results <- results %>% mutate(p_adj_bh = pmin(results$p_adj_bh, 40))
+results$odds_ratio_log2 <- log2(results$odds_ratio)
+
+# clean up Inf to log2FC of +/- 4
+results <- results %>%
+  mutate(odds_ratio_log2 = case_when(
+    is.infinite(odds_ratio_log2) & odds_ratio_log2 > 0 ~ 4,
+    is.infinite(odds_ratio_log2) & odds_ratio_log2 < 0 ~ -4,
+    TRUE ~ odds_ratio_log2
+  ))
+```
+
+## make plot from testing for non-targeting
+
+```{r}
+#set levels (order)
+cellstate_levels <- c("Mono", "MyP","HSPC","MegEry")
+#make plot
+NT_control_cellstate_bias_plot <- results %>%
+  mutate(
+    test_cellstate = factor(test_cellstate, levels = cellstate_levels),
+    p_adj_cap = ifelse(p_adj_bh <= 0 | is.na(p_adj_bh), 1e-10, pmax(p_adj_bh, 1e-10)),
+    x = -log10(p_adj_cap),
+    point_class = dplyr::case_when(
+      significant & odds_ratio_log2 > 0 ~ "sig_pos",
+      significant & odds_ratio_log2 < 0 ~ "sig_neg",
+      TRUE ~ "non_sig"
+    ),
+    hover = paste0(
+      "guide: ", testguide,
+      "<br>cellstate: ", test_cellstate,
+      "<br>odds_ratio_log2: ", signif(odds_ratio_log2, 3),
+      "<br>p_adj_bh: ", signif(p_adj_bh, 3),
+      "<br>-log10(p_adj_cap): ", signif(x, 3)
+    )
+  ) %>%
+  ggplot(aes(x = x, y = test_cellstate)) +
+  geom_violin(aes(group = test_cellstate), trim = TRUE, alpha = 0.1) +
+  geom_point(aes(color = point_class, text = hover),
+             alpha = 0.8, size = 2,
+             position = position_jitter(height = 0.12, width = 0)) +
+  scale_color_manual(values = c(
+    "non_sig" = "grey70",
+    "sig_pos" = "red",
+    "sig_neg" = "blue"
+  )) +
+  scale_x_continuous(
+    breaks = function(lims) seq(floor(lims[1]), ceiling(lims[2]), by = 1),
+    expand = expansion(mult = c(0.02, 0.05))
+  ) +
+  labs(
+    x = "-log10(BH-adjusted p-value; min 1e-10)",
+    y = "Cell state",
+    color = ""
+  ) +
+  theme_classic()
+
+subset(results, odds_ratio_log2 <= 0) %>%
+  summary(significant)
+subset(results, odds_ratio_log2 >= 0) %>%
+  summary(significant)
+NT_control_cellstate_bias_plot
+#ggplotly(NT_control_cellstate_bias_plot, tooltip = "text")
+```
+
+```{r, eval=FALSE}
+ggsave( filename = "manuscript/fig1/NT_control_cellstate_bias_plot_fisher.pdf",
+        plot     = NT_control_cellstate_bias_plot,
+        width    = 8,
+        height   = 5,
+        units    = "in"
+        )
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
+
