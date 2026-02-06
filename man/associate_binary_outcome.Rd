@@ -9,11 +9,13 @@ associate_binary_outcome(
   metadata,
   outcome.name,
   other.predictors = NULL,
+  arbitrary.models = NULL,
   genelists = NULL,
   run.ML = T,
   cores = 6,
   replicates = 3,
-  use.s = "lambda.min"
+  use.s = "lambda.min",
+  ROCs = F
 )
 }
 \arguments{
@@ -25,6 +27,8 @@ associate_binary_outcome(
 
 \item{other.predictors}{Names of any other columns in \code{metadata} that may serve as 0-shot predictors for the outcome}
 
+\item{arbitrary.models}{Arbitrary linear regression models, based on columns of \code{metadata}, that should also be included in the comparison}
+
 \item{genelists}{List of character vectors of gene names. If \code{run.ML=TRUE}, LASSO regression using these genes as input will be performed and compared to the other models.}
 
 \item{run.ML}{Whether to run machine-learning models.}
@@ -34,6 +38,8 @@ associate_binary_outcome(
 \item{replicates}{Number of times to repeat CV calculation with different train-test splits. Only used if \code{run.ML=TRUE}}
 
 \item{use.s}{Regularization to use for LASSO, one of \code{lambda.min} and \code{lambda.1se}}
+
+\item{ROCs}{If full ROC curves should be returned (if FALSE, only returns AUCs)}
 }
 \value{
 A list with entries \code{p.values} and, if \code{run.ML} is set, \code{aucs}, their standard deviation across replicates, and info on the different folds

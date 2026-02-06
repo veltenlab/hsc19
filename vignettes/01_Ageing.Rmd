@@ -42,7 +42,7 @@ import numpy as np
 from scipy import sparse
 import pandas as pd
 ad = sc.read("furer_ultima.h5ad")
-hsc_normal = ad[(ad.obs["cell state"] == "HSC_MPP") & (ad.obs["disease"] == "normal")]
+ad = ad[(ad.obs["cell state"] == "HSC_MPP") & (ad.obs["disease"] == "normal")]
 
 
 # Extract donor IDs
@@ -115,14 +115,14 @@ pvalues <- associate_numeric_outcome(result, metadata_final, "age", run.ML = F)$
 pvalues$show_value <- with(pvalues, ifelse(p_outcome < 0.05, -log10(p_outcome), -log10(0.05)))
 pvalues$factor_id <- factor(pvalues$factor_id, levels = sprintf("Factor_%d",USEGRPS))
 ylabels <- gsub("Factor_", "", factor_annotation$factor_id); names(ylabels) <- factor_annotation$factor_id
-any_sig <- sapply(names(ylabels), function(x) any(pvalues$p_outcome[pvalues$factor_id == x] < 0.06))
+any_sig <- sapply(names(ylabels), function(x) any(pvalues$p_outcome[pvalues$factor_id == x] < 0.01))
 ylabels[!any_sig] <- ""
 pvalues <- merge(pvalues, factor_annotation)
 
 pvalues$xval <- with(pvalues, show_value * sign_outcome * multiply_with)
 ylab <- sprintf("%s: %s", gsub("Factor_", "GRP", factor_annotation$factor_id), factor_annotation$factor_label); names(ylab) <- factor_annotation$factor_id
 
-a <- qplot(x =  xval, y = reorder(factor_id,xval), color = as.factor(sign_outcome* multiply_with), data = subset(pvalues, p_outcome < 0.05)) +
+a <- qplot(x =  xval, y = reorder(factor_id,xval), color = as.factor(sign_outcome* multiply_with), data = subset(pvalues, p_outcome < 0.01)) +
   xlab("Association with age:\n-log10 p-value (signed)") + scale_y_discrete(labels = ylab, name = "GRP") + theme_bw(base_size = 14) + theme(panel.grid = element_blank()) + scale_color_manual(values = c("-1" = "darkblue", "1"= "darkred"), guide =F)
  print(a)
 ```
@@ -130,7 +130,7 @@ a <- qplot(x =  xval, y = reorder(factor_id,xval), color = as.factor(sign_outcom
 ## Display correlation of GRP3 and Ageing (Figure 3B)
 
 ```{r simpleplot, fig.width=2.5, fig.height=2.5}
-b <- qplot(result@result[ "Factor_3", ], metadata_final$age) +theme_bw(base_size = 14) + theme(panel.grid = element_blank()) + xlab("Factor 3") + ylab("Age")
+b <- qplot(result@result[ "Factor_3", ], metadata_final$age) +theme_bw(base_size = 14) + theme(panel.grid = element_blank()) + xlab("Factor 3") + ylab("Age") + scale_x_continuous(limits = c(2.8,4.5), oob=scales::squish)
 print(b)
 ```
 
