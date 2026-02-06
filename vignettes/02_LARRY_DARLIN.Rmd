@@ -294,6 +294,7 @@ pvalues$experiment <- toupper(gsub("_.+", "", pvalues$phenotype))
 pvalues$phenotype <- gsub("larry_|darlin_", "", pvalues$phenotype)
 pvalues$show_value <- with(pvalues, ifelse(p_outcome < 0.1, -log10(p_outcome), log10(0.1)))
 pvalues <- subset(pvalues, grepl("Factor_", factor_id))
+USEGRPS <- c(1:6,8,9,11:21)
 pvalues$factor_id <- factor(pvalues$factor_id, levels = sprintf("Factor_%d",USEGRPS))
 labels <- c( "output" = "Output", "activity" = "Activity")
 ylabels <- gsub("Factor_", "", factor_annotation$factor_id); names(ylabels) <- factor_annotation$factor_id

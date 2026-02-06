@@ -26,15 +26,17 @@ Imports:
   survival,
   plyr,
   reshape2,
-  ggplot2
-Suggests:
-  rmarkdown,
+  ggplot2,
+  AnnotationDbi,
   org.Hs.eg.db,
   org.Mm.eg.db,
-  knitr,
   survminer,
   infotheo,
   ggnewscale,
-  ggrepel
+  ggrepel,
+  pheatmap
+Suggests:
+  rmarkdown,
+  knitr
 RoxygenNote: 7.3.2
 VignetteBuilder: knitr

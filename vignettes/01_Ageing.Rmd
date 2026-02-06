@@ -113,6 +113,7 @@ The `associate` function, in its basic use, computes p-value associations.
 pvalues <- associate_numeric_outcome(result, metadata_final, "age", run.ML = F)$p.values
 
 pvalues$show_value <- with(pvalues, ifelse(p_outcome < 0.05, -log10(p_outcome), -log10(0.05)))
+USEGRPS <- c(1:6,8,9,11:21)
 pvalues$factor_id <- factor(pvalues$factor_id, levels = sprintf("Factor_%d",USEGRPS))
 ylabels <- gsub("Factor_", "", factor_annotation$factor_id); names(ylabels) <- factor_annotation$factor_id
 any_sig <- sapply(names(ylabels), function(x) any(pvalues$p_outcome[pvalues$factor_id == x] < 0.01))
