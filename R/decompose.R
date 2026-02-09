@@ -77,12 +77,16 @@ setGeneric("convertIDs", function(x, rid) {
 })
 
 #' @describeIn convertIDs Method for matrices
+#' @exportMethod convertIDs
+#' @aliases convertIDs,matrix,character-method
 setMethod("convertIDs", signature(x = "matrix", rid = "character"),
           function(x, rid) {
             convertIDs_matrix(x, rid)
           })
 
 #' @describeIn convertIDs Method for character vectors
+#' @exportMethod convertIDs
+#' @aliases convertIDs,character,character-method
 setMethod("convertIDs", signature(x = "character", rid = "character"),
           function(x, rid) {
             convertIDs_character(x, rid)

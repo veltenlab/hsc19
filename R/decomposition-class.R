@@ -29,6 +29,15 @@ decomposition <- setClass(
 
 )
 
+#' Show a decomposition object
+#'
+#' Print a short summary of a \code{\link{decomposition}}.
+#'
+#' @param object A \code{\link{decomposition}} object.
+#'
+#' @return Invisibly returns \code{object}.
+#' @exportMethod show
+#' @aliases show,decomposition-method
 setMethod(
   "show",
   "decomposition",
@@ -38,6 +47,14 @@ setMethod(
   }
 )
 
+#' Get column names of a decomposition object
+#'
+#' @param x A \code{\link{decomposition}} object.
+#' @param do.NULL, prefix Passed to \code{\link[base]{colnames}}.
+#'
+#' @return A character vector of column names.
+#' @exportMethod colnames
+#' @aliases colnames,decomposition-method
 setMethod(
   "colnames",
   signature(x = "decomposition"),
@@ -46,7 +63,14 @@ setMethod(
   }
 )
 
-## Setter so `colnames(obj) <- value` works
+#' Set column names of a decomposition object
+#'
+#' @param x A \code{\link{decomposition}} object.
+#' @param value A character vector of new column names.
+#'
+#' @return The updated \code{\link{decomposition}} object.
+#' @exportMethod "colnames<-"
+#' @aliases colnames<-,decomposition,character-method
 setReplaceMethod(
   "colnames",
   signature(x = "decomposition", value = "character"),
@@ -56,7 +80,18 @@ setReplaceMethod(
   }
 )
 
-
+#' Subset a decomposition object
+#'
+#' Keep only a subset of samples/cells in a \code{\link{decomposition}}.
+#'
+#' @param x A \code{\link{decomposition}} object.
+#' @param include Samples/cells to keep. This is used to subset \code{x@result[, include]}
+#'   and is passed to \code{cells = include} in \code{\link[Seurat:subset.Seurat]{Seurat::subset()}}.
+#'
+#' @return A \code{\link{decomposition}} object containing only \code{include}.
+#' @seealso \code{\link[base]{subset}}
+#' @exportMethod subset
+#' @aliases subset,decomposition-method
 setMethod(
   "subset",
   signature(x = "decomposition"),
