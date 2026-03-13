@@ -24,6 +24,7 @@ USEGRPS <- c(1:6,8,9,11:21) #final_21
 #'\item{Perform LASSO regularized principal component regression on 50 PCs computed on highly variable genes from the underlying Seurat object}
 #'\item{Perform DE testing between samples from the highest and lowest quartile of the outcome, and perform LASSO or linear regression on the top DE features}
 #'\item{Perform LASSO and linear regression on the 18 GRPs from the decomposition}
+#'\item{If \code{other.predictors} are provided, perform LASSO and linear regression on all available precomputed predictors}
 #'\item{If \code{genelists} are provided, perform LASSO on the genes from the gene lists}
 #'}
 #'
@@ -86,6 +87,7 @@ associate_numeric_outcome<- function(decomp, metadata, outcome.name, other.predi
 #'\item{Perform LASSO regularized principal component regression on 50 PCs computed on highly variable genes from the underlying Seurat object}
 #'\item{Perform DE testing between samples from the highest and lowest quartile of the outcome, and perform LASSO or linear regression on the top DE features}
 #'\item{Perform LASSO and linear regression on the 18 GRPs from the decomposition}
+#'\item{If \code{other.predictors} are provided, perform LASSO and regression on all available precomputed predictors}
 #'\item{If \code{genelists} are provided, perform LASSO on the genes from the gene lists}
 #'}
 #'
@@ -155,6 +157,7 @@ associate_binary_outcome<- function(decomp, metadata, outcome.name, other.predic
 #'\item{Perform LASSO regularized principal component regression on 50 PCs computed on highly variable genes from the underlying Seurat object}
 #'\item{Perform DE testing between samples from the highest and lowest quartile of the outcome, and perform LASSO or linear regression on the top DE features}
 #'\item{Perform LASSO and linear regression on the 18 GRPs from the decomposition}
+#'\item{If \code{other.predictors} are provided, perform LASSO and Cox regression on all available precomputed predictors}
 #'\item{If \code{genelists} are provided, perform LASSO on the genes from the gene lists}
 #'}
 #'
@@ -226,6 +229,9 @@ associate_survival_outcome <- function(
     # run replicated CV (returns out-of-fold C-indices from get_cv_surv)
     cv_result <- parallel::mclapply(X = 1:replicates, FUN = function(void) suppressWarnings(get_cv_surv(decomp, modelf, outcome.status.name, outcome.time.name,
                     other.predictors, genelists, arbitrary.models, use.s)),mc.cores = cores)
+    
+    cv_result <- cv_result[sapply(cv_result, is.list)]
+    
     cis <- do.call(rbind,lapply(cv_result, "[[",1))
     best.factor <- table(unlist(lapply(cv_result, "[[",2)))
     best.other <- table(unlist(lapply(cv_result, "[[",3)))
@@ -265,6 +271,8 @@ get_cv <- function(decomp, modelf, outcome.name, other.predictors, genelists, us
   modelf$predicted_factors_lasso <- NA
   modelf$predicted_best_factor <- NA
   modelf$predicted_best_other <- NA
+  modelf$predicted_other_predictors <- NA
+  modelf$predicted_other_predictors_lasso <- NA
   modelf$predicted_pcr <- NA
   modelf$predicted_pcr_lasso <- NA
   modelf$predicted_de <- NA
@@ -300,6 +308,22 @@ get_cv <- function(decomp, modelf, outcome.name, other.predictors, genelists, us
     mo_factors_lasso <- glmnet::cv.glmnet(as.matrix(train[,sprintf("Factor_%d",USEGRPS)]), train[,outcome.name])
     modelf$predicted_factors[modelf$set==i] <- predict(mo_factors, test)
     modelf$predicted_factors_lasso[modelf$set==i] <- predict(mo_factors_lasso, as.matrix(test[,sprintf("Factor_%d",USEGRPS)]), s = use.s)
+
+    #regression with all other predictors
+    other.cols <- other.predictors[other.predictors %in% colnames(train)]
+    if (length(other.cols) > 0) {
+      other.formula <- stats::reformulate(other.cols, response = outcome.name)
+      mo_other_predictors <- lm(other.formula, data = train)
+      modelf$predicted_other_predictors[modelf$set==i] <- predict(mo_other_predictors, test)
+
+      mm_train_other <- get_model_matrix(train, other.cols)
+      if (ncol(mm_train_other) > 0) {
+        mm_test_other <- get_model_matrix(test, other.cols, terms.obj = attr(mm_train_other, "terms"))
+        mo_other_predictors_lasso <- glmnet::cv.glmnet(mm_train_other, train[,outcome.name])
+        modelf$predicted_other_predictors_lasso[modelf$set==i] <-
+          as.numeric(predict(mo_other_predictors_lasso, mm_test_other, s = use.s))
+      }
+    }
 
     #PCR
     mo_pcr_lasso <- glmnet::cv.glmnet(as.matrix(train[,sprintf("PC_%d",1:30)]), train[,outcome.name])
@@ -353,6 +377,8 @@ get_cv <- function(decomp, modelf, outcome.name, other.predictors, genelists, us
                 R2.best.other = getr2(modelf[,"predicted_best_other"], modelf[,outcome.name]),
                 R2.lm.factors = getr2(modelf[,"predicted_factors"], modelf[,outcome.name]),
                 R2.lasso.factors = getr2(modelf[,"predicted_factors_lasso"], modelf[,outcome.name]),
+                R2.lm.other.predictors = getr2(modelf[,"predicted_other_predictors"], modelf[,outcome.name]),
+                R2.lasso.other.predictors = getr2(modelf[,"predicted_other_predictors_lasso"], modelf[,outcome.name]),
                 R2.lm.de = getr2(modelf[,"predicted_de"], modelf[,outcome.name]),
                 R2.lasso.de = getr2(modelf[,"predicted_de_lasso"], modelf[,outcome.name]),
                 R2.lm.pcr= getr2(modelf[,"predicted_pcr"], modelf[,outcome.name]),
@@ -367,6 +393,24 @@ get_cv <- function(decomp, modelf, outcome.name, other.predictors, genelists, us
 getr2 <- function(a,b) {
   r2 <- cor(a,b)^2
   ifelse(r2>0,r2,0)
+}
+
+get_model_matrix <- function(data, predictors, terms.obj = NULL) {
+  predictors <- predictors[predictors %in% colnames(data)]
+  if (!length(predictors)) {
+    return(matrix(numeric(0), nrow = nrow(data), ncol = 0))
+  }
+
+  if (is.null(terms.obj)) {
+    mm <- stats::model.matrix(stats::reformulate(predictors), data = data)
+    terms.obj <- stats::terms(stats::reformulate(predictors), data = data)
+  } else {
+    mm <- stats::model.matrix(terms.obj, data = data)
+  }
+
+  mm <- mm[, colnames(mm) != "(Intercept)", drop = FALSE]
+  attr(mm, "terms") <- terms.obj
+  mm
 }
 
 # helper: compute ROC AUC safely (returns NA if all-NA or single class)
@@ -415,6 +459,8 @@ get_cv_binary <- function(decomp, modelf, outcome.name, other.predictors, geneli
   modelf$predicted_factors_lasso <- NA_real_
   modelf$predicted_best_factor <- NA_real_
   modelf$predicted_best_other <- NA_real_
+  modelf$predicted_other_predictors <- NA_real_
+  modelf$predicted_other_predictors_lasso <- NA_real_
   modelf$predicted_pcr <- NA_real_
   modelf$predicted_pcr_lasso <- NA_real_
   modelf$predicted_de <- NA_real_
@@ -466,6 +512,27 @@ get_cv_binary <- function(decomp, modelf, outcome.name, other.predictors, geneli
                            data = train, family = binomial())
       modelf$predicted_best_other[modelf$set == i] <-
         predict(mo_best_other, test, type = "response")
+    }
+
+    # logistic with all other predictors
+    other.cols <- other.predictors[other.predictors %in% colnames(train)]
+    if (length(other.cols) > 0) {
+      other.formula <- stats::reformulate(other.cols, response = outcome.name)
+      mo_other_predictors <- glm(other.formula, data = train, family = binomial())
+      modelf$predicted_other_predictors[modelf$set == i] <-
+        predict(mo_other_predictors, test, type = "response")
+
+      mm_train_other <- get_model_matrix(train, other.cols)
+      if (ncol(mm_train_other) > 0) {
+        mm_test_other <- get_model_matrix(test, other.cols, terms.obj = attr(mm_train_other, "terms"))
+        mo_other_predictors_lasso <- glmnet::cv.glmnet(mm_train_other,
+                                                       train[, outcome.name],
+                                                       family = "binomial")
+        modelf$predicted_other_predictors_lasso[modelf$set == i] <-
+          as.numeric(predict(mo_other_predictors_lasso,
+                             mm_test_other,
+                             s = use.s, type = "response"))
+      }
     }
 
     # logistic with factors
@@ -582,6 +649,8 @@ get_cv_binary <- function(decomp, modelf, outcome.name, other.predictors, geneli
   aucs <- c(
     AUC.best.factor   = get_auc(modelf[, "predicted_best_factor"],   y_all),
     AUC.best.other    = get_auc(modelf[, "predicted_best_other"],    y_all),
+    AUC.logit.other.predictors = get_auc(modelf[, "predicted_other_predictors"], y_all),
+    AUC.lasso.other.predictors = get_auc(modelf[, "predicted_other_predictors_lasso"], y_all),
     AUC.logit.factors = get_auc(modelf[, "predicted_factors"],       y_all),
     AUC.lasso.factors = get_auc(modelf[, "predicted_factors_lasso"], y_all),
     AUC.logit.de      = get_auc(modelf[, "predicted_de"],            y_all),
@@ -601,6 +670,8 @@ get_cv_binary <- function(decomp, modelf, outcome.name, other.predictors, geneli
     rocs <- list(
       AUC.best.factor   = get_full_auc(modelf[, "predicted_best_factor"],   y_all),
       AUC.best.other    = get_full_auc(modelf[, "predicted_best_other"],    y_all),
+      AUC.logit.other.predictors = get_full_auc(modelf[, "predicted_other_predictors"], y_all),
+      AUC.lasso.other.predictors = get_full_auc(modelf[, "predicted_other_predictors_lasso"], y_all),
       AUC.logit.factors = get_full_auc(modelf[, "predicted_factors"],       y_all),
       AUC.lasso.factors = get_full_auc(modelf[, "predicted_factors_lasso"], y_all),
       AUC.logit.de      = get_full_auc(modelf[, "predicted_de"],            y_all),
@@ -654,6 +725,8 @@ get_cv_surv <- function(decomp, modelf, outcome.status.name, outcome.time.name,
   modelf$predicted_factors_lasso <- NA_real_
   modelf$predicted_best_factor <- NA_real_
   modelf$predicted_best_other <- NA_real_
+  modelf$predicted_other_predictors <- NA_real_
+  modelf$predicted_other_predictors_lasso <- NA_real_
   modelf$predicted_pcr <- NA_real_
   modelf$predicted_pcr_lasso <- NA_real_
   modelf$predicted_de <- NA_real_
@@ -709,6 +782,24 @@ get_cv_surv <- function(decomp, modelf, outcome.status.name, outcome.time.name,
       f <- as.formula(paste("survival::Surv(", outcome.time.name, ",", outcome.status.name, ") ~", best.other))
       mo_best_other <- survival::coxph(f, data = train, ties = "efron")
       modelf$predicted_best_other[modelf$set == i] <- as.numeric(predict(mo_best_other, newdata = test, type = "lp"))
+    }
+
+    # Cox with all other predictors + Lasso-Cox
+    other.cols <- other.predictors[other.predictors %in% colnames(train)]
+    if (length(other.cols) > 0) {
+      f <- stats::reformulate(other.cols,
+                              response = paste0("survival::Surv(", outcome.time.name, ",", outcome.status.name, ")"))
+      mo_other_predictors <- survival::coxph(f, data = train, ties = "efron")
+      modelf$predicted_other_predictors[modelf$set == i] <-
+        as.numeric(predict(mo_other_predictors, newdata = test, type = "lp"))
+
+      mm_train_other <- get_model_matrix(train, other.cols)
+      if (ncol(mm_train_other) > 0) {
+        mm_test_other <- get_model_matrix(test, other.cols, terms.obj = attr(mm_train_other, "terms"))
+        mo_other_predictors_lasso <- glmnet::cv.glmnet(mm_train_other, SurvTrain, family = "cox")
+        modelf$predicted_other_predictors_lasso[modelf$set == i] <-
+          as.numeric(predict(mo_other_predictors_lasso, mm_test_other, s = use.s, type = "link"))
+      }
     }
 
     # 3) Cox with all factors + Lasso-Cox
@@ -816,6 +907,8 @@ get_cv_surv <- function(decomp, modelf, outcome.status.name, outcome.time.name,
   cidx <- c(
     C.best.factor   = get_cindex(modelf[,"predicted_best_factor"],   y_time_all, y_status_all),
     C.best.other    = get_cindex(modelf[,"predicted_best_other"],    y_time_all, y_status_all),
+    C.cox.other.predictors = get_cindex(modelf[,"predicted_other_predictors"], y_time_all, y_status_all),
+    C.lasso.other.predictors = get_cindex(modelf[,"predicted_other_predictors_lasso"], y_time_all, y_status_all),
     C.cox.factors   = get_cindex(modelf[,"predicted_factors"],       y_time_all, y_status_all),
     C.lasso.factors = get_cindex(modelf[,"predicted_factors_lasso"], y_time_all, y_status_all),
     C.cox.de        = get_cindex(modelf[,"predicted_de"],            y_time_all, y_status_all),
@@ -832,4 +925,3 @@ get_cv_surv <- function(decomp, modelf, outcome.status.name, outcome.time.name,
 
   return(list(cidx = cidx, best.factor = best_factors, best.other = best_others))
 }
-
