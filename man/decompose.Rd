@@ -4,12 +4,14 @@
 \alias{decompose}
 \title{Decompose RNA-seq data into 18 gene regulatory programs}
 \usage{
-decompose(counts = NULL, s = NULL)
+decompose(counts = NULL, s = NULL, loadings = hsc19_loadings)
 }
 \arguments{
 \item{counts}{Count matrix, with gene IDs as row names and sample identifiers as column names. Supported gene name formats are mouse or human gene symbols (preferred), or ENSEMBL (ENSG/ENSMUSG) IDs.}
 
 \item{s}{A seurat object, with \code{NormalizeData} and \code{FindVariableFeatures} run. One of \code{counts} or \code{s} needs to be provided. If \code{counts} is provided, \code{s} is ignored.}
+
+\item{loadings}{Loading matrix with genes in rows and factors/programs in columns. Defaults to \code{hsc19_loadings}.}
 }
 \value{
 Returns an object of class \code{\link{decomposition}}

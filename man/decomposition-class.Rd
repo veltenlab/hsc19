@@ -13,6 +13,8 @@ This class stores the results of \code{\link{decompose}}
 \describe{
 \item{\code{result}}{inferred activity of the 18 GRPs per sample}
 
+\item{\code{factor_names}}{Names of the factors/programs used for the decomposition}
+
 \item{\code{pca}}{result of running `prcomp` on the HVGs of the input data}
 
 \item{\code{pve}}{Percent variance explained}
@@ -21,4 +23,3 @@ This class stores the results of \code{\link{decompose}}
 
 \item{\code{pve_pca}}{Percent variant explained by 18 principal components}
 }}
-

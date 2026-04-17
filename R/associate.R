@@ -1,8 +1,27 @@
-#in the 500 gene GRPs, c(1:16,18,20), in the original one USEGRPS, and in the final
-USEGRPS <- c(1:6,8,9,11:21) #final_21
-#USEGRPS <- c(1:15,18) #final_18, could also include 18
-#USEGRPS <- c(1,2,5:20) # final 20
-#USEGRPS <- 3:20
+#' Get factor/program column names from a decomposition
+#'
+#' Returns the factor/program names stored on a \code{\link{decomposition}} object.
+#' This is primarily useful for downstream code that needs to preserve the factor
+#' order used during decomposition, including custom loading matrices supplied to
+#' \code{\link{decompose}}.
+#'
+#' @param decomp Object of class \code{\link{decomposition}}, typically returned by \code{\link{decompose}}.
+#'
+#' @return A character vector of factor/program column names.
+#' @export
+get_factor_columns <- function(decomp) {
+  if ("factor_names" %in% slotNames(decomp) && length(decomp@factor_names) > 0) {
+    return(decomp@factor_names)
+  }
+
+  factor_cols <- setdiff(rownames(decomp@result), "(Intercept)")
+  if (length(factor_cols) > 0) {
+    return(factor_cols)
+  }
+
+  colnames(hsc19_loadings)
+}
+
 #'Associate GRPs with a numeric outcome
 #'
 #'This function takes a decomposition object and a metadata frame with a numeric outcome and, if available, other predictors. It will then a) compute statistical associations between
@@ -32,17 +51,20 @@ USEGRPS <- c(1:6,8,9,11:21) #final_21
 #'@export
 associate_numeric_outcome<- function(decomp, metadata, outcome.name, other.predictors=NULL, run.ML=T, genelists = NULL,  cores = 6, replicates = 3, use.s = "lambda.min") {
 
+  factor_cols <- get_factor_columns(decomp)
   metadata <- metadata[colnames(decomp),]
   modelf <- cbind(metadata, t(decomp@result))
   if (any(is.na(modelf[,outcome.name]))) {
     warning("Removed ", sum(is.na(modelf[,outcome.name])), "NA entries for ", outcome.name)
     modelf <- modelf[!is.na(modelf[,outcome.name]),]
   }
-  p.values <- data.frame(factor_id = factor(c(sprintf("Factor_%d", USEGRPS),other.predictors),levels = c(sprintf("Factor_%d", USEGRPS),other.predictors)),
-                          p_outcome = apply(modelf[,c(sprintf("Factor_%d", USEGRPS),other.predictors)], 2, function(x) cor.test(x, modelf[,outcome.name])$p.value),
-                          sign_outcome = sign(apply(modelf[,c(sprintf("Factor_%d", USEGRPS),other.predictors)], 2, function(x) cor.test(x, modelf[,outcome.name])$estimate)))
+  candidate_cols <- c(factor_cols, other.predictors)
+  candidate_cols <- candidate_cols[candidate_cols %in% colnames(modelf)]
+  p.values <- data.frame(factor_id = factor(candidate_cols, levels = candidate_cols),
+                          p_outcome = apply(modelf[, candidate_cols, drop = FALSE], 2, function(x) cor.test(x, modelf[,outcome.name])$p.value),
+                          sign_outcome = sign(apply(modelf[, candidate_cols, drop = FALSE], 2, function(x) cor.test(x, modelf[,outcome.name])$estimate)))
 
-  best.factor <- with(subset(p.values, factor_id %in% sprintf("Factor_%d", USEGRPS)), as.character(factor_id[which.min(p_outcome)]))
+  best.factor <- with(subset(p.values, factor_id %in% factor_cols), as.character(factor_id[which.min(p_outcome)]))
   if (!is.null(other.predictors)) best.other <- with(subset(p.values, factor_id %in% other.predictors), as.character(factor_id[which.min(p_outcome)]))
 
   if(run.ML) {
@@ -95,17 +117,20 @@ associate_numeric_outcome<- function(decomp, metadata, outcome.name, other.predi
 #'@export
 associate_binary_outcome<- function(decomp, metadata, outcome.name, other.predictors=NULL, arbitrary.models = NULL, genelists = NULL, run.ML=T, cores = 6, replicates = 3, use.s = "lambda.min", ROCs = F) {
 
+  factor_cols <- get_factor_columns(decomp)
   metadata <- metadata[colnames(decomp),]
   modelf <- cbind(metadata, t(decomp@result))
   if (any(is.na(modelf[,outcome.name]))) {
     warning("Removed ", sum(is.na(modelf[,outcome.name])), "NA entries for ", outcome.name)
     modelf <- modelf[!is.na(modelf[,outcome.name]),]
   }
-  p.values <- data.frame(factor_id = factor(c(sprintf("Factor_%d", USEGRPS),other.predictors),levels = c(sprintf("Factor_%d", USEGRPS),other.predictors)),
-                         p_outcome = apply(modelf[,c(sprintf("Factor_%d", USEGRPS),other.predictors)], 2, function(x) wilcox.test(x[modelf[,outcome.name]],x[!modelf[,outcome.name]])$p.value),
-                         sign_outcome = sign(apply(modelf[,c(sprintf("Factor_%d", USEGRPS),other.predictors)], 2, function(x) wilcox.test(x[modelf[,outcome.name]],x[!modelf[,outcome.name]], conf.int = TRUE)$estimate)))
+  candidate_cols <- c(factor_cols, other.predictors)
+  candidate_cols <- candidate_cols[candidate_cols %in% colnames(modelf)]
+  p.values <- data.frame(factor_id = factor(candidate_cols, levels = candidate_cols),
+                         p_outcome = apply(modelf[, candidate_cols, drop = FALSE], 2, function(x) wilcox.test(x[modelf[,outcome.name]],x[!modelf[,outcome.name]])$p.value),
+                         sign_outcome = sign(apply(modelf[, candidate_cols, drop = FALSE], 2, function(x) wilcox.test(x[modelf[,outcome.name]],x[!modelf[,outcome.name]], conf.int = TRUE)$estimate)))
 
-  best.factor <- with(subset(p.values, factor_id %in% sprintf("Factor_%d", USEGRPS)), as.character(factor_id[which.min(p_outcome)]))
+  best.factor <- with(subset(p.values, factor_id %in% factor_cols), as.character(factor_id[which.min(p_outcome)]))
   if (!is.null(other.predictors)) best.other <- with(subset(p.values, factor_id %in% other.predictors), as.character(factor_id[which.min(p_outcome)]))
 
   if(run.ML) {
@@ -177,6 +202,7 @@ associate_survival_outcome <- function(
     use.s = "lambda.min"
 ) {
   stopifnot(all(c(outcome.status.name, outcome.time.name) %in% colnames(metadata)))
+  factor_cols <- get_factor_columns(decomp)
 
   # align to decomp cells and build model frame with factors
   metadata <- metadata[colnames(decomp), , drop = FALSE]
@@ -196,11 +222,12 @@ associate_survival_outcome <- function(
   }
 
   # ---- Univariate Cox p-values for candidate predictors ----
-  cand <- c(sprintf("Factor_%d", USEGRPS), other.predictors)
+  cand <- c(factor_cols, other.predictors)
   cand <- cand[cand %in% colnames(modelf)]
 
   get_stats <- function(cl) {
-    f <- as.formula(paste0("survival::Surv(", outcome.time.name, ",", outcome.status.name, ") ~ ", cl))
+    f <- stats::reformulate(cl,
+                            response = paste0("survival::Surv(", outcome.time.name, ",", outcome.status.name, ")"))
     fit <- try(survival::coxph(f, data = modelf, ties = "efron"), silent = TRUE)
     if (inherits(fit, "try-error")) return(c(p = NA_real_, coef = NA_real_))
     co <- try(summary(fit)$coefficients, silent = TRUE)
@@ -216,7 +243,7 @@ associate_survival_outcome <- function(
   }
 
   p.values <- data.frame(
-    factor_id    = factor(cand, levels = c(sprintf("Factor_%d", USEGRPS), other.predictors)),
+    factor_id    = factor(cand, levels = c(factor_cols, other.predictors)),
     p_outcome    =  as.numeric(stats["p", ]),
     sign_outcome = -1 * sign(as.numeric(stats["coef", ])), # i multiply with -1 so that positive reads as: higher program x is assocaited with better survival
     row.names    = cand
@@ -259,6 +286,7 @@ associate_survival_outcome <- function(
 
 
 get_cv <- function(decomp, modelf, outcome.name, other.predictors, genelists, use.s) {
+  factor_cols <- get_factor_columns(decomp)
   modelf <- modelf[sample(1:nrow(modelf)),]
   #set up train-test splits
   if (nrow(modelf) > 50) {
@@ -286,10 +314,12 @@ get_cv <- function(decomp, modelf, outcome.name, other.predictors, genelists, us
     train <- subset(modelf, set != i)
     test <- subset(modelf, set == i)
     #determine the best "0shot" predictors
-    p.values.internal <- data.frame(factor_id = factor(c(sprintf("Factor_%d", USEGRPS),other.predictors),levels = c(sprintf("Factor_%d", USEGRPS),other.predictors)),
-                                    p_outcome = apply(train[,c(sprintf("Factor_%d", USEGRPS),other.predictors)], 2, function(x) cor.test(x, train[,outcome.name])$p.value))
+    candidate_cols <- c(factor_cols, other.predictors)
+    candidate_cols <- candidate_cols[candidate_cols %in% colnames(train)]
+    p.values.internal <- data.frame(factor_id = factor(candidate_cols, levels = candidate_cols),
+                                    p_outcome = apply(train[, candidate_cols, drop = FALSE], 2, function(x) cor.test(x, train[,outcome.name])$p.value))
 
-    best.factor <- with(subset(p.values.internal, factor_id %in% sprintf("Factor_%d", USEGRPS)), as.character(factor_id[which.min(p_outcome)]))
+    best.factor <- with(subset(p.values.internal, factor_id %in% factor_cols), as.character(factor_id[which.min(p_outcome)]))
     best_factors <- c(best_factors, best.factor)
     if (!is.null(other.predictors)) {
       best.other <- with(subset(p.values.internal, factor_id %in% other.predictors), as.character(factor_id[which.min(p_outcome)]))
@@ -297,17 +327,17 @@ get_cv <- function(decomp, modelf, outcome.name, other.predictors, genelists, us
     }
 
     #0 shot predictions
-    mo_best_factor <- lm(as.formula(sprintf("%s~%s", outcome.name, best.factor)), data = train)
-    if (!is.null(other.predictors)) mo_best_other <- lm(as.formula(sprintf("%s~%s", outcome.name, best.other)), data = train)
+    mo_best_factor <- lm(stats::reformulate(best.factor, response = outcome.name), data = train)
+    if (length(best.other)) mo_best_other <- lm(stats::reformulate(best.other, response = outcome.name), data = train)
 
     modelf$predicted_best_factor[modelf$set==i] <- predict(mo_best_factor, test)
-    if (!is.null(other.predictors))  modelf$predicted_best_other[modelf$set==i] <- predict(mo_best_other, test)
+    if (length(best.other))  modelf$predicted_best_other[modelf$set==i] <- predict(mo_best_other, test)
 
     #regression with factors
-    mo_factors <- lm(as.formula(sprintf("%s~%s", outcome.name, paste(sprintf("Factor_%d",USEGRPS),collapse="+"))), data = train)
-    mo_factors_lasso <- glmnet::cv.glmnet(as.matrix(train[,sprintf("Factor_%d",USEGRPS)]), train[,outcome.name])
+    mo_factors <- lm(stats::reformulate(factor_cols, response = outcome.name), data = train)
+    mo_factors_lasso <- glmnet::cv.glmnet(as.matrix(train[, factor_cols, drop = FALSE]), train[,outcome.name])
     modelf$predicted_factors[modelf$set==i] <- predict(mo_factors, test)
-    modelf$predicted_factors_lasso[modelf$set==i] <- predict(mo_factors_lasso, as.matrix(test[,sprintf("Factor_%d",USEGRPS)]), s = use.s)
+    modelf$predicted_factors_lasso[modelf$set==i] <- predict(mo_factors_lasso, as.matrix(test[, factor_cols, drop = FALSE]), s = use.s)
 
     #regression with all other predictors
     other.cols <- other.predictors[other.predictors %in% colnames(train)]
@@ -435,6 +465,7 @@ get_full_auc <- function(probs, y) {
 }
 
 get_cv_binary <- function(decomp, modelf, outcome.name, other.predictors, genelists, arbitrary.models, use.s, ROCs) {
+  factor_cols <- get_factor_columns(decomp)
   # ensure binary coding and no NAs in outcome
   y <- modelf[, outcome.name]
   if (is.logical(y)) y <- as.integer(y)
@@ -478,10 +509,10 @@ get_cv_binary <- function(decomp, modelf, outcome.name, other.predictors, geneli
     test  <- subset(modelf, set == i)
 
     # choose best single predictors via univariate logistic regression p-values
-    cand.cols <- c(sprintf("Factor_%d", USEGRPS), other.predictors)
+    cand.cols <- c(factor_cols, other.predictors)
     cand.cols <- cand.cols[cand.cols %in% colnames(train)]
     pvals <- sapply(cand.cols, function(cl) {
-      f <- as.formula(paste0(outcome.name, "~", cl))
+      f <- stats::reformulate(cl, response = outcome.name)
       suppressWarnings(summary(glm(f, data = train, family = binomial()))$coefficients[2,4])
     })
     p.values.internal <- data.frame(
@@ -489,8 +520,7 @@ get_cv_binary <- function(decomp, modelf, outcome.name, other.predictors, geneli
       p_outcome = pvals, row.names = cand.cols
     )
 
-    fac.only <- sprintf("Factor_%d", USEGRPS)
-    best.factor <- with(subset(p.values.internal, factor_id %in% fac.only),
+    best.factor <- with(subset(p.values.internal, factor_id %in% factor_cols),
                         as.character(factor_id[which.min(p_outcome)]))
     best_factors <- c(best_factors, best.factor)
 
@@ -502,13 +532,13 @@ get_cv_binary <- function(decomp, modelf, outcome.name, other.predictors, geneli
     best_others <- c(best_others, best.other)
     # 0-shot predictions (single predictors) – logistic
     if (length(best.factor)) {
-      mo_best_factor <- glm(as.formula(sprintf("%s~%s", outcome.name, best.factor)),
+      mo_best_factor <- glm(stats::reformulate(best.factor, response = outcome.name),
                             data = train, family = binomial())
       modelf$predicted_best_factor[modelf$set == i] <-
         predict(mo_best_factor, test, type = "response")
     }
     if (!is.null(best.other) && length(best.other)) {
-      mo_best_other <- glm(as.formula(sprintf("%s~%s", outcome.name, best.other)),
+      mo_best_other <- glm(stats::reformulate(best.other, response = outcome.name),
                            data = train, family = binomial())
       modelf$predicted_best_other[modelf$set == i] <-
         predict(mo_best_other, test, type = "response")
@@ -536,11 +566,9 @@ get_cv_binary <- function(decomp, modelf, outcome.name, other.predictors, geneli
     }
 
     # logistic with factors
-    fac.cols <- sprintf("Factor_%d", USEGRPS)
-    fac.cols <- fac.cols[fac.cols %in% colnames(train)]
+    fac.cols <- factor_cols[factor_cols %in% colnames(train)]
     if (length(fac.cols)) {
-      mo_factors <- glm(as.formula(sprintf("%s~%s", outcome.name,
-                                           paste(fac.cols, collapse = "+"))),
+      mo_factors <- glm(stats::reformulate(fac.cols, response = outcome.name),
                         data = train, family = binomial())
       modelf$predicted_factors[modelf$set == i] <- predict(mo_factors, test, type = "response")
 
@@ -707,6 +735,7 @@ get_cindex <- function(risk, time, status) {
 
 get_cv_surv <- function(decomp, modelf, outcome.status.name, outcome.time.name,
                         other.predictors, genelists, arbitrary.models, use.s) {
+  factor_cols <- get_factor_columns(decomp)
   stopifnot(all(c(outcome.status.name, outcome.time.name) %in% names(modelf)))
   if (!requireNamespace("survival", quietly = TRUE)) stop("Need survival package.")
   if (!requireNamespace("glmnet", quietly = TRUE))   stop("Need glmnet package.")
@@ -752,17 +781,17 @@ get_cv_surv <- function(decomp, modelf, outcome.status.name, outcome.time.name,
     SurvTrain <- survival::Surv(train[[outcome.time.name]], train[[outcome.status.name]])
 
     # 1) best single predictors by univariate Cox p-values
-    cand.cols <- c(sprintf("Factor_%d", USEGRPS), other.predictors)
+    cand.cols <- c(factor_cols, other.predictors)
     cand.cols <- cand.cols[cand.cols %in% colnames(train)]
     get_p <- function(cl) {
-      f <- as.formula(paste("survival::Surv(", outcome.time.name, ",", outcome.status.name, ") ~", cl))
+      f <- stats::reformulate(cl,
+                              response = paste0("survival::Surv(", outcome.time.name, ",", outcome.status.name, ")"))
       fit <- suppressWarnings(survival::coxph(f, data = train, ties = "efron"))
       as.numeric(summary(fit)$coefficients[1, "Pr(>|z|)"])
     }
     pvals <- if (length(cand.cols)) sapply(cand.cols, get_p) else numeric(0)
     p.df <- data.frame(factor_id = cand.cols, p_outcome = pvals)
-    fac.only <- sprintf("Factor_%d", USEGRPS)
-    best.factor <- with(subset(p.df, factor_id %in% fac.only),
+    best.factor <- with(subset(p.df, factor_id %in% factor_cols),
                         as.character(factor_id[which.min(p_outcome)]))
     best_factors <- c(best_factors, best.factor)
     if (!is.null(other.predictors)) {
@@ -774,12 +803,14 @@ get_cv_surv <- function(decomp, modelf, outcome.status.name, outcome.time.name,
 
     # 2) 0-shot Cox with best single predictors
     if (length(best.factor)) {
-      f <- as.formula(paste("survival::Surv(", outcome.time.name, ",", outcome.status.name, ") ~", best.factor))
+      f <- stats::reformulate(best.factor,
+                              response = paste0("survival::Surv(", outcome.time.name, ",", outcome.status.name, ")"))
       mo_best_factor <- survival::coxph(f, data = train, ties = "efron")
       modelf$predicted_best_factor[modelf$set == i] <- as.numeric(predict(mo_best_factor, newdata = test, type = "lp"))
     }
-    if (!is.null(other.predictors)) {
-      f <- as.formula(paste("survival::Surv(", outcome.time.name, ",", outcome.status.name, ") ~", best.other))
+    if (length(best.other)) {
+      f <- stats::reformulate(best.other,
+                              response = paste0("survival::Surv(", outcome.time.name, ",", outcome.status.name, ")"))
       mo_best_other <- survival::coxph(f, data = train, ties = "efron")
       modelf$predicted_best_other[modelf$set == i] <- as.numeric(predict(mo_best_other, newdata = test, type = "lp"))
     }
@@ -803,11 +834,10 @@ get_cv_surv <- function(decomp, modelf, outcome.status.name, outcome.time.name,
     }
 
     # 3) Cox with all factors + Lasso-Cox
-    fac.cols <- sprintf("Factor_%d", USEGRPS)
-    fac.cols <- fac.cols[fac.cols %in% colnames(train)]
+    fac.cols <- factor_cols[factor_cols %in% colnames(train)]
     if (length(fac.cols)) {
-      f <- as.formula(paste("survival::Surv(", outcome.time.name, ",", outcome.status.name, ") ~",
-                            paste(fac.cols, collapse = "+")))
+      f <- stats::reformulate(fac.cols,
+                              response = paste0("survival::Surv(", outcome.time.name, ",", outcome.status.name, ")"))
       mo_factors <- survival::coxph(f, data = train, ties = "efron")
       modelf$predicted_factors[modelf$set == i] <- as.numeric(predict(mo_factors, newdata = test, type = "lp"))
 

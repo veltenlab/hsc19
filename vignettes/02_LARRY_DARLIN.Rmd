@@ -294,8 +294,8 @@ pvalues$experiment <- toupper(gsub("_.+", "", pvalues$phenotype))
 pvalues$phenotype <- gsub("larry_|darlin_", "", pvalues$phenotype)
 pvalues$show_value <- with(pvalues, ifelse(p_outcome < 0.1, -log10(p_outcome), log10(0.1)))
 pvalues <- subset(pvalues, grepl("Factor_", factor_id))
-USEGRPS <- c(1:6,8,9,11:21)
-pvalues$factor_id <- factor(pvalues$factor_id, levels = sprintf("Factor_%d",USEGRPS))
+factor_levels <- get_factor_columns(result_larry)
+pvalues$factor_id <- factor(pvalues$factor_id, levels = factor_levels)
 labels <- c( "output" = "Output", "activity" = "Activity")
 ylabels <- gsub("Factor_", "", factor_annotation$factor_id); names(ylabels) <- factor_annotation$factor_id
 any_sig <- sapply(names(ylabels), function(x) any(pvalues$p_outcome[pvalues$factor_id == x] < 0.05))
@@ -356,8 +356,8 @@ simple <- ddply(predictive_performance, c("experiment","phenotype", "grouping"),
                 
                 )
 simple$best.list[is.na(simple$best.list)] <- simple$grouping[is.na(simple$best.list)]
-otherlevels <- unique(simple$best.list); otherlevels <- otherlevels[!otherlevels %in% c("Supervised ML",sprintf("Factor_%d",USEGRPS) ) ]
-simple$best.list <- factor(simple$best.list, levels = rev(c("Supervised ML",sprintf("Factor_%d",USEGRPS), otherlevels )))
+otherlevels <- unique(simple$best.list); otherlevels <- otherlevels[!otherlevels %in% c("Supervised ML", factor_levels ) ]
+simple$best.list <- factor(simple$best.list, levels = rev(c("Supervised ML", factor_levels, otherlevels )))
 simple$which.best <- factor(simple$which.best, levels = c("R2.best.factor", "R2.best.other", "AUC.best.factor", "AUC.best.other", unique(simple$which.best[simple$grouping == "Supervised ML"])))
 
 ylabels <- gsub("Factor_", "GRP ", unique(simple$best.list)); names(ylabels) <- unique(simple$best.list)
@@ -383,4 +383,3 @@ fig3f <- ggplot(aes(x = best, y = simplegroup, color = simplegroup), data=for_co
 
 print(fig3f)
 ```
-

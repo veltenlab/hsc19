@@ -5,6 +5,7 @@
 #'This class stores the results of \code{\link{decompose}}
 #'
 #'@slot result inferred activity of the 18 GRPs per sample
+#'@slot factor_names Names of the factors/programs used for the decomposition
 #'@slot pca result of running `prcomp` on the HVGs of the input data
 #'@slot pve Percent variance explained
 #'@slot s Seurat object that was used to create the decomposition
@@ -14,6 +15,7 @@ decomposition <- setClass(
   "decomposition",
   slots = c(
     result = "matrix",
+    factor_names = "character",
     pve = "numeric",
     pve_pca = "numeric",
     pca = "DimReduc",
@@ -42,8 +44,9 @@ setMethod(
   "show",
   "decomposition",
   function(object) {
-    cat(sprintf("Decomposition object of %d samples (%s, %s, ...), run on %d genes. 19 GRPs explain %.1f %% of the gene expression variance in your data. For comparison, 19 principal components explain %.1f %%",
-        ncol(object@result), colnames(object@result)[1], colnames(object@result)[2], length(object@usegenes), 100* object@pve, 100* object@pve_pca))
+    n_factors <- length(object@factor_names)
+    cat(sprintf("Decomposition object of %d samples (%s, %s, ...), run on %d genes. %d programs explain %.1f %% of the gene expression variance in your data. For comparison, %d principal components explain %.1f %%",
+        ncol(object@result), colnames(object@result)[1], colnames(object@result)[2], length(object@usegenes), n_factors, 100 * object@pve, n_factors, 100 * object@pve_pca))
   }
 )
 

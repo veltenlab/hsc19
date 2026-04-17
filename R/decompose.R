@@ -3,9 +3,10 @@
 #'Ideally run this function on RNA-seq data of HSCs, e.g. bulk RNA-seq data of CD34+ cells (human) or LSK cells (mouse), or single cell data subset to HSCs. This function can run on bulk, pseudobulk or single cell RNA-seq.
 #'@param counts Count matrix, with gene IDs as row names and sample identifiers as column names. Supported gene name formats are mouse or human gene symbols (preferred), or ENSEMBL (ENSG/ENSMUSG) IDs.
 #'@param s A seurat object, with \code{NormalizeData} and \code{FindVariableFeatures} run. One of \code{counts} or \code{s} needs to be provided. If \code{counts} is provided, \code{s} is ignored.
+#'@param loadings Loading matrix with genes in rows and factors/programs in columns. Defaults to \code{hsc19_loadings}.
 #'@return Returns an object of class \code{\link{decomposition}}
 #'@export
-decompose <- function(counts = NULL, s = NULL) {
+decompose <- function(counts = NULL, s = NULL, loadings = hsc19_loadings) {
   if (!is.null(counts)) {
     s <- Seurat::CreateSeuratObject(counts)
     s <- Seurat::NormalizeData(s)
@@ -17,6 +18,19 @@ decompose <- function(counts = NULL, s = NULL) {
     if (is.null(VariableFeatures(s))) stop("If providing a seurat assay, data needs to be normalized and FindVariableFeatures needs to have run.")
   }
 
+  if (!is.matrix(loadings)) {
+    stop("'loadings' must be a matrix.")
+  }
+  if (is.null(rownames(loadings)) || is.null(colnames(loadings))) {
+    stop("'loadings' must have row names (genes) and column names (factor/program names).")
+  }
+  if (anyDuplicated(rownames(loadings))) {
+    stop("'loadings' must have unique row names.")
+  }
+  if (anyDuplicated(colnames(loadings))) {
+    stop("'loadings' must have unique column names.")
+  }
+
   #determine format of rownames
   if (mean(grepl("^ENSG", rownames(s)) > 0.9)) {
     rid <- "hens"
@@ -26,21 +40,25 @@ decompose <- function(counts = NULL, s = NULL) {
     rid <- "hsy"
   } else rid <- "msy"
 
-  use_W_mat <- hsc19_loadings
+  use_W_mat <- loadings
   #convert gene ids
   use_W_mat <- convertIDs(use_W_mat, rid)
+  factor_names <- colnames(use_W_mat)
 
   res <- list()
   exprs <- as.matrix(Seurat::GetAssayData(s))
   usegenes = intersect(rownames(use_W_mat), rownames(exprs))
   for (i in 1:ncol(exprs)) {
-    modelf <- data.frame(response = exprs[usegenes,i], use_W_mat[usegenes,])
+    modelf <- data.frame(response = exprs[usegenes, i], use_W_mat[usegenes, , drop = FALSE], check.names = FALSE)
     mo <- lm(response ~ ., data = modelf)
-    res[[i]] <- coef(mo)
+    coef_i <- coef(mo)
+    names(coef_i) <- c("(Intercept)", factor_names)
+    res[[i]] <- coef_i
     attr(res[[i]], "R2") <- summary(mo)$r.squared
   }
   resmat <- do.call(cbind,res)
   colnames(resmat) <- colnames(exprs)
+  n_factors <- ncol(use_W_mat)
 
   #percent variance explained
   #denominator: sum of variance of all genes
@@ -52,14 +70,15 @@ decompose <- function(counts = NULL, s = NULL) {
 
   out <- new("decomposition")
   out@result <- resmat
+  out@factor_names <- factor_names
   out@pve <- pve_numer / pve_denom
   if (ncol(s) > 50) out@pca <- s@reductions$pca
   out@s <- s
-  out@pve_pca <- cumsum(pca$sdev^2 / sum(pca$sdev^2))[19]
+  out@pve_pca <- cumsum(pca$sdev^2 / sum(pca$sdev^2))[min(n_factors, length(pca$sdev))]
   out@usegenes <- usegenes
 
-  cat(sprintf("Run on %d samples. On the overlapping gene set of %d genes, 19 GRPs explain %.1f %% of the gene expression variance in your data. For comparison, 19 principal components explain %.1f %%\n",
-              ncol(resmat), length(out@usegenes), 100* out@pve, 100* out@pve_pca))
+  cat(sprintf("Run on %d samples. On the overlapping gene set of %d genes, %d programs explain %.1f %% of the gene expression variance in your data. For comparison, %d principal components explain %.1f %%\n",
+              ncol(resmat), length(out@usegenes), n_factors, 100 * out@pve, n_factors, 100 * out@pve_pca))
 
   return(out)
 }
