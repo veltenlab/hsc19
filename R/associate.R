@@ -70,7 +70,26 @@ associate_numeric_outcome<- function(decomp, metadata, outcome.name, other.predi
   if(run.ML) {
     modelf <- cbind(modelf, decomp@pca@cell.embeddings)
 
-    cv_result <- parallel::mclapply(1:replicates, function(void) get_cv(decomp, modelf, outcome.name, other.predictors, genelists, use.s), mc.cores= cores)
+    cv_result <- parallel::mclapply(
+      1:replicates,
+      function(void) {
+        tryCatch(
+          get_cv(decomp, modelf, outcome.name, other.predictors, genelists, use.s),
+          error = function(e) structure(list(message = conditionMessage(e)), class = "cv_error")
+        )
+      },
+      mc.cores = cores
+    )
+    ok <- vapply(cv_result, function(x) is.list(x) && !inherits(x, "cv_error"), logical(1))
+    if (!all(ok)) {
+      warning("Dropped ", sum(!ok), " failed CV replicate(s) in associate_numeric_outcome: ",
+              paste(vapply(cv_result[!ok], `[[`, character(1), "message"), collapse = "; "))
+    }
+    cv_result <- cv_result[ok]
+    if (!length(cv_result)) {
+      stop("All CV replicates failed in associate_numeric_outcome().")
+    }
+
     r.squares <- do.call(rbind,lapply(cv_result, "[[",1))
     best.factor <- table(unlist(lapply(cv_result, "[[",2)))
     best.other <- table(unlist(lapply(cv_result, "[[",3)))
@@ -136,7 +155,26 @@ associate_binary_outcome<- function(decomp, metadata, outcome.name, other.predic
   if(run.ML) {
     modelf <- cbind(modelf, decomp@pca@cell.embeddings)
 
-    cv_result <- parallel::mclapply(1:replicates, function(void) suppressWarnings(get_cv_binary(decomp, modelf, outcome.name, other.predictors, genelists, arbitrary.models, use.s, ROCs)), mc.cores= cores)
+    cv_result <- parallel::mclapply(
+      1:replicates,
+      function(void) {
+        tryCatch(
+          suppressWarnings(get_cv_binary(decomp, modelf, outcome.name, other.predictors, genelists, arbitrary.models, use.s, ROCs)),
+          error = function(e) structure(list(message = conditionMessage(e)), class = "cv_error")
+        )
+      },
+      mc.cores = cores
+    )
+    ok <- vapply(cv_result, function(x) is.list(x) && !inherits(x, "cv_error"), logical(1))
+    if (!all(ok)) {
+      warning("Dropped ", sum(!ok), " failed CV replicate(s) in associate_binary_outcome: ",
+              paste(vapply(cv_result[!ok], `[[`, character(1), "message"), collapse = "; "))
+    }
+    cv_result <- cv_result[ok]
+    if (!length(cv_result)) {
+      stop("All CV replicates failed in associate_binary_outcome().")
+    }
+
     aucs <- do.call(rbind,lapply(cv_result, "[[", 1))
     best.factor <- table(unlist(lapply(cv_result, "[[",2)))
     best.other <- table(unlist(lapply(cv_result, "[[",3)))
@@ -254,10 +292,26 @@ associate_survival_outcome <- function(
     modelf <- cbind(modelf, decomp@pca@cell.embeddings)
 
     # run replicated CV (returns out-of-fold C-indices from get_cv_surv)
-    cv_result <- parallel::mclapply(X = 1:replicates, FUN = function(void) suppressWarnings(get_cv_surv(decomp, modelf, outcome.status.name, outcome.time.name,
-                    other.predictors, genelists, arbitrary.models, use.s)),mc.cores = cores)
-    
-    cv_result <- cv_result[sapply(cv_result, is.list)]
+    cv_result <- parallel::mclapply(
+      X = 1:replicates,
+      FUN = function(void) {
+        tryCatch(
+          suppressWarnings(get_cv_surv(decomp, modelf, outcome.status.name, outcome.time.name,
+                                       other.predictors, genelists, arbitrary.models, use.s)),
+          error = function(e) structure(list(message = conditionMessage(e)), class = "cv_error")
+        )
+      },
+      mc.cores = cores
+    )
+    ok <- vapply(cv_result, function(x) is.list(x) && !inherits(x, "cv_error"), logical(1))
+    if (!all(ok)) {
+      warning("Dropped ", sum(!ok), " failed CV replicate(s) in associate_survival_outcome: ",
+              paste(vapply(cv_result[!ok], `[[`, character(1), "message"), collapse = "; "))
+    }
+    cv_result <- cv_result[ok]
+    if (!length(cv_result)) {
+      stop("All CV replicates failed in associate_survival_outcome().")
+    }
     
     cis <- do.call(rbind,lapply(cv_result, "[[",1))
     best.factor <- table(unlist(lapply(cv_result, "[[",2)))
@@ -309,6 +363,7 @@ get_cv <- function(decomp, modelf, outcome.name, other.predictors, genelists, us
   names(predicted_genelists) <- names(genelists)
   best_factors <- c()
   best_others <- c()
+  best.other <- character(0)
   for (i in 1:max(modelf$set)) {
     cat(i, "\n")
     train <- subset(modelf, set != i)
@@ -356,10 +411,18 @@ get_cv <- function(decomp, modelf, outcome.name, other.predictors, genelists, us
     }
 
     #PCR
-    mo_pcr_lasso <- glmnet::cv.glmnet(as.matrix(train[,sprintf("PC_%d",1:30)]), train[,outcome.name])
-    mo_pcr <- lm(as.formula(sprintf("%s~%s", outcome.name, paste(sprintf("PC_%d",1:18),collapse="+"))), data = train)
-    modelf$predicted_pcr_lasso[modelf$set==i] <- predict(mo_pcr_lasso, as.matrix(test[,sprintf("PC_%d",1:30)]), s = use.s)
-    modelf$predicted_pcr[modelf$set==i] <- predict(mo_pcr, test)
+    pc.cols <- sprintf("PC_%d", 1:30)
+    pc.cols <- pc.cols[pc.cols %in% colnames(train)]
+    if (length(pc.cols)) {
+      mo_pcr_lasso <- glmnet::cv.glmnet(as.matrix(train[, pc.cols, drop = FALSE]), train[, outcome.name])
+      modelf$predicted_pcr_lasso[modelf$set == i] <- predict(mo_pcr_lasso, as.matrix(test[, pc.cols, drop = FALSE]), s = use.s)
+
+      pc.lm.cols <- intersect(sprintf("PC_%d", 1:18), pc.cols)
+      if (length(pc.lm.cols)) {
+        mo_pcr <- lm(stats::reformulate(pc.lm.cols, response = outcome.name), data = train)
+        modelf$predicted_pcr[modelf$set == i] <- predict(mo_pcr, test)
+      }
+    }
 
     #DE Lasso
     top <- rownames(train)[train[,outcome.name] > quantile(train[,outcome.name], 0.75)]
@@ -771,6 +834,7 @@ get_cv_surv <- function(decomp, modelf, outcome.status.name, outcome.time.name,
 
   best_factors <- c()
   best_others <- c()
+  best.other <- character(0)
 
   for (i in 1:max(modelf$set)) {
 
