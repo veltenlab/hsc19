@@ -77,7 +77,7 @@ other_predictors <- c("mean_G2M_score_progenitors", "mean_S_score_progenitors",s
 
 #overall survival: all patients
 grp2output_os <- associate_survival_outcome(result, meta, "OS_status", "OS_days", other.predictors = other_predictors, run.ML = T, replicates = 10, cores = 10, arbitrary.models = models)
-
+saveRDS(grp2output_os, file = "grp2output_os.rds")
 #overall survival: patients treated with intensive chemotherapy
 intensely_treated <- rownames(meta)[meta$therapy_group == "intensive" & !is.na(meta$best_response_chemo)] 
 meta$response <- meta$best_response_chemo == "CR"

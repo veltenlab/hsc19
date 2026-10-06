@@ -25,7 +25,7 @@ associate_binary_outcome(
 
 \item{outcome.name}{Column name from \code{metadata} that contains the outcome of interest}
 
-\item{other.predictors}{Names of any other columns in \code{metadata} that may serve as 0-shot predictors for the outcome}
+\item{other.predictors}{Names of any other columns in \code{metadata} that may serve as 0-shot predictors for the outcome. One or more predictors may be supplied. The joint LASSO model uses complete cases for these predictors and leaves predictions missing for held-out samples with missing scores.}
 
 \item{arbitrary.models}{Arbitrary linear regression models, based on columns of \code{metadata}, that should also be included in the comparison}
 

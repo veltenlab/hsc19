@@ -1,0 +1,221 @@
+---
+title: "Decomposition of AML transcriptomes to predict treatment response"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Application: Venetoclax response in AML (Renders)}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+```{r setup, warning=FALSE, message=FALSE}
+library(hsc19)
+library(Seurat)
+library(ggplot2)
+set.seed(1337)
+```
+
+## Summary
+
+This vignette decomposes bulk RNA-seq profiles from AML leukemic stem cells
+(LSCs) into nineteen gene regulatory programs and compares their ability to
+predict treatment response with the supplied genetic and transcriptomic scores.
+Two outcomes are considered: venetoclax-based treatment (`response_vv`) and
+DA treatment (`response_da`), as annotated in the study metadata.
+
+## Data preparation
+
+The inputs for the Renders dataset (ArrayExpress accession
+[E-MTAB-14142](https://www.ebi.ac.uk/biostudies/arrayexpress/studies/E-MTAB-14142))
+are included in `data_Venetoclax/`: the count matrix, the study sample annotations
+(`E-MTAB-14142.sdrf.txt`), and the supplementary scores
+(`Metadata_Lars_10022026.csv`). We use the original study annotations for both
+response outcomes and the supplementary table for the comparison scores.
+Only diagnostic LSC samples are retained. Sequencing lanes are deduplicated
+using the sample-level columns of the annotation table.
+
+```{r prepare-data, warning=FALSE, message=FALSE}
+study_metadata <- read.delim(
+  "data_Venetoclax/E-MTAB-14142.sdrf.txt", check.names = FALSE,
+  na.strings = c("", "NA")
+)
+study_metadata <- unique(study_metadata[, seq_len(10)])
+study_metadata <- subset(
+  study_metadata,
+  `Characteristics[cell type]` == "LSC" &
+    `Characteristics[disease staging]` == "Diagnosis"
+)
+
+scores <- read.csv(
+  "data_Venetoclax/Metadata_Lars_10022026.csv", check.names = FALSE,
+  na.strings = c("", "NA")
+)
+join_columns <- c(
+  "Characteristics[individual]", "Comment[ENA_SAMPLE]", "Source Name",
+  "Characteristics[cell type]", "Characteristics[disease staging]"
+)
+score_columns <- c("3GeneScore", "New Score", "Mode-AML", "ELN-2022",
+                   "PDX", "MAC-Score_LSC")
+meta <- merge(study_metadata, scores[, c(join_columns, score_columns)],
+              by = join_columns)
+names(meta)[match(score_columns, names(meta))] <-
+  c("threegene", "newscore", "modeaml", "eln2022", "PDX", "MAC")
+rownames(meta) <- with(meta, paste(
+  `Characteristics[individual]`, `Characteristics[cell type]`,
+  `Characteristics[disease staging]`, sep = "_"
+))
+stopifnot(!anyDuplicated(rownames(meta)))
+
+counts <- read.csv(
+  "data_Venetoclax/Count_matrix_LSC_MATURE.csv.gz", row.names = 1,
+  check.names = FALSE
+)
+stopifnot(all(rownames(meta) %in% colnames(counts)))
+counts <- as.matrix(counts[, rownames(meta), drop = FALSE])
+
+s <- CreateSeuratObject(counts, meta.data = meta)
+s <- NormalizeData(s, verbose = FALSE)
+s <- FindVariableFeatures(s, verbose = FALSE)
+s <- ScaleData(s, verbose = FALSE)
+meta <- meta[colnames(s), , drop = FALSE]
+
+meta$response_vv <- meta$`Characteristics[response_vv]` == "responder"
+meta$response_da <- meta$`Characteristics[response_da]` == "responder"
+meta$threegene <- factor(meta$threegene, levels = c("Low", "Medium", "High"))
+meta$newscore <- factor(meta$newscore, levels = c("Favorable", "Adverse"))
+meta$threegene_num <- as.integer(meta$threegene)
+meta$newscore_num <- as.integer(meta$newscore)
+has.vv <- rownames(meta)[!is.na(meta$response_vv)]
+has.da <- rownames(meta)[!is.na(meta$response_da)]
+```
+
+## Decompose data into GRPs
+
+```{r decompose}
+result <- decompose(s = s)
+print(result)
+```
+
+## Associate GRPs with treatment response
+
+Each analysis includes all samples with a recorded outcome. Missing comparison
+scores are omitted only from the models requiring those scores, so GRP models
+can still use all outcome-annotated samples. The numeric scores encode their
+ordered risk categories. The custom models below treat the scores as categorical
+or continuous predictors according to their original type.
+
+The association functions report Wilcoxon tests and compare out-of-fold ROC
+AUCs over ten repeated cross-validation runs. They use ten folds for more than
+50 samples and leave-one-out cross-validation for smaller cohorts. The standard
+deviations describe variation across repeats, rather than confidence intervals.
+The calculations can take several minutes; reduce `cores` for machines with
+fewer available CPUs.
+
+```{r associate}
+models <- c("threegene", "eln2022", "newscore", "MAC")
+names(models) <- c("3 Gene score", "ELN22 risk", "New Score", "MAC Score")
+other_predictors <- c("threegene_num", "newscore_num")
+
+grp2output_vv <- associate_binary_outcome(
+  subset(result, include = has.vv), meta[has.vv, , drop = FALSE],
+  "response_vv", other.predictors = other_predictors,
+  run.ML = TRUE, replicates = 10, cores = 10, arbitrary.models = models
+)
+saveRDS(grp2output_vv, file = "grp2output_vv.rds")
+# grp2output_da <- associate_binary_outcome(
+#   subset(result, include = has.da), meta[has.da, , drop = FALSE],
+#   "response_da", other.predictors = other_predictors,
+#   run.ML = TRUE, replicates = 10, cores = 10
+# )
+```
+
+```{r sample-numbers}
+data.frame(
+  outcome = c("VV", "DA"),
+  samples = c(length(has.vv), length(has.da)),
+  responders = c(sum(meta$response_vv, na.rm = TRUE),
+                 sum(meta$response_da, na.rm = TRUE))
+)
+grp2output_vv$p.values
+# grp2output_da$p.values
+```
+
+## Response by score stratum
+
+GRP18 is oriented using the package's program annotation and divided into
+tertiles. MAC scores are likewise divided into tertiles among samples with
+observed VV response and MAC score. The bars show exact 90% binomial confidence
+intervals; point sizes indicate the number of samples in each stratum.
+
+```{r response-strata, fig.width=6, fig.height=3.5}
+plf <- meta[has.vv, , drop = FALSE]
+grp18_sign <- factor_annotation$multiply_with[
+  factor_annotation$factor_id == "Factor_18"
+]
+strata <- c("Low", "Medium", "High")
+plf$GRP18 <- factor(
+  infotheo::discretize(data.frame(score =
+    result@result["Factor_18", has.vv] * grp18_sign), nbins = 3)[[1]],
+  levels = 1:3, labels = strata
+)
+plf$MAC_tertile <- NA_integer_
+with_mac <- !is.na(plf$MAC)
+plf$MAC_tertile[with_mac] <- infotheo::discretize(
+  data.frame(score = plf$MAC[with_mac]), nbins = 3
+)[[1]]
+plf$MAC_tertile <- factor(plf$MAC_tertile, levels = 1:3, labels = strata)
+
+score_names <- c(GRP18 = "GRP18 (tertiles)", threegene = "3 Gene score",
+                 MAC_tertile = "MAC Score (tertiles)")
+response_summary <- do.call(rbind, lapply(names(score_names), function(score) {
+  do.call(rbind, lapply(strata, function(stratum) {
+    response <- plf$response_vv[!is.na(plf[[score]]) & plf[[score]] == stratum]
+    if (!length(response)) return(NULL)
+    ci <- binom.test(sum(response), length(response), conf.level = 0.9)$conf.int
+    data.frame(score = score_names[[score]], stratum = stratum,
+               n = length(response), response = mean(response),
+               lower = ci[1], upper = ci[2])
+  }))
+}))
+response_summary$stratum <- factor(response_summary$stratum, levels = strata)
+
+ggplot(response_summary, aes(stratum, response, color = score)) +
+  geom_linerange(aes(ymin = lower, ymax = upper),
+                 position = position_dodge(width = 0.3)) +
+  geom_point(aes(size = n), position = position_dodge(width = 0.3)) +
+  scale_y_continuous("Responders (%)", breaks = seq(0, 1, 0.2),
+                     labels = seq(0, 100, 20), limits = c(0, 1)) +
+  scale_size_area(name = "Samples", max_size = 4) +
+  scale_color_brewer(palette = "Set1", name = "Predictor") +
+  xlab("Stratum") + theme_bw() + theme(panel.grid = element_blank())
+```
+
+## Compare predictive performance
+
+The best single GRP is selected within each training fold; the LASSO GRP model
+combines the decomposed programs. All displayed AUCs are based on held-out
+predictions. Models with missing scores may be evaluated on fewer samples.
+
+```{r auc-plot, fig.width=6, fig.height=3}
+model_labels <- c(
+  AUC.best.factor = "Best single GRP", AUC.lasso.factors = "GRPs (LASSO)",
+  "3 Gene score" = "3 Gene score", "ELN22 risk" = "ELN22 risk",
+  "New Score" = "New Score", "MAC Score" = "MAC Score"
+)
+performance <- data.frame(
+  model = names(grp2output_vv$aucs), auc = grp2output_vv$aucs,
+  sd = grp2output_vv$aucs.sd
+)
+performance <- subset(performance, model %in% names(model_labels))
+performance$model <- factor(performance$model, levels = rev(names(model_labels)))
+ggplot(performance, aes(auc, model)) +
+  geom_point() +
+  geom_errorbar(aes(xmin = auc - sd, xmax = auc + sd),
+                orientation = "y", width = 0.1) +
+  scale_y_discrete(labels = model_labels) +
+  xlab("Cross-validated ROC AUC (mean ± SD)") + ylab(NULL) +
+  theme_bw() + theme(panel.grid = element_blank())
+```

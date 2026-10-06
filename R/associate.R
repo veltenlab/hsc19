@@ -93,7 +93,8 @@ associate_numeric_outcome<- function(decomp, metadata, outcome.name, other.predi
     r.squares <- do.call(rbind,lapply(cv_result, "[[",1))
     best.factor <- table(unlist(lapply(cv_result, "[[",2)))
     best.other <- table(unlist(lapply(cv_result, "[[",3)))
-    return(list(p.values = p.values, r.squares = colMeans(r.squares), r.squares.sd = apply(r.squares, 2,sd), best.factor = best.factor, best.other = best.other))
+    store <- sapply(cv_result, function(x) x$r.squares["R2.best.factor"])
+    return(list(p.values = p.values, r.squares = colMeans(r.squares), r.squares.sd = apply(r.squares, 2,sd), best.factor = best.factor, best.other = best.other, pairwise.wilcox.tests = get_pairwise_wilcox_tests(r.squares), stored_samples = store))
     # r.squares <- get_cv(decomp, modelf, outcome.name, other.predictors, genelists, use.s)
     # return(list(p.values = p.values, r.squares = r.squares))
 
@@ -113,7 +114,7 @@ associate_numeric_outcome<- function(decomp, metadata, outcome.name, other.predi
 #'@param decomp Object of class \code{\link{decomposition}}, output from \code{\link{decompose}}
 #'@param metadata A data frame with rownames corresponding to column names of \code{decomp} that contains the outcome of interest and any other predictors that should be tested
 #'@param outcome.name Column name from \code{metadata} that contains the outcome of interest
-#'@param other.predictors Names of any other columns in \code{metadata} that may serve as 0-shot predictors for the outcome
+#'@param other.predictors Names of any other columns in \code{metadata} that may serve as 0-shot predictors for the outcome. One or more predictors may be supplied. The joint LASSO model uses complete cases for these predictors and leaves predictions missing for held-out samples with missing scores.
 #'@param run.ML Whether to run machine-learning models.
 #'@param arbitrary.models Arbitrary linear regression models, based on columns of \code{metadata}, that should also be included in the comparison
 #'@param genelists List of character vectors of gene names. If \code{run.ML=TRUE}, LASSO regression using these genes as input will be performed and compared to the other models.
@@ -178,12 +179,15 @@ associate_binary_outcome<- function(decomp, metadata, outcome.name, other.predic
     aucs <- do.call(rbind,lapply(cv_result, "[[", 1))
     best.factor <- table(unlist(lapply(cv_result, "[[",2)))
     best.other <- table(unlist(lapply(cv_result, "[[",3)))
+    store <- vapply(cv_result, function(x) unname(x$aucs["AUC.best.factor"]), numeric(1))
+    pairwise.wilcox.tests <- get_pairwise_wilcox_tests(aucs)
+
     if (ROCs)  {
       rocs <- lapply(cv_result, "[[", 4)
-      return(list(p.values = p.values, aucs = colMeans(aucs), aucs.sd = apply(aucs, 2,sd), best.factor = best.factor, best.other = best.other, rocs = rocs))
+      return(list(p.values = p.values, aucs = colMeans(aucs), aucs.sd = apply(aucs, 2,sd), best.factor = best.factor, best.other = best.other, rocs = rocs, pairwise.wilcox.tests = pairwise.wilcox.tests, stored_samples = store))
     } else {
-      return(list(p.values = p.values, aucs = colMeans(aucs), aucs.sd = apply(aucs, 2,sd), best.factor = best.factor, best.other = best.other))
-    }
+      return(list(p.values = p.values, aucs = colMeans(aucs), aucs.sd = apply(aucs, 2,sd), best.factor = best.factor, best.other = best.other, pairwise.wilcox.tests = pairwise.wilcox.tests, stored_samples = store))
+      }
 
     # aucs <- get_cv_binary(decomp, modelf, outcome.name, other.predictors, genelists, use.s)
     # return(list(p.values = p.values, aucs = aucs))
@@ -312,10 +316,12 @@ associate_survival_outcome <- function(
     if (!length(cv_result)) {
       stop("All CV replicates failed in associate_survival_outcome().")
     }
-    
+
     cis <- do.call(rbind,lapply(cv_result, "[[",1))
     best.factor <- table(unlist(lapply(cv_result, "[[",2)))
     best.other <- table(unlist(lapply(cv_result, "[[",3)))
+    pairwise.wilcox.tests = get_pairwise_wilcox_tests(cis)
+    store <- sapply(cv_result, function(x) x$cidx["C.best.factor"])
     # cis <- lapply(X = 1:replicates, FUN = function(void) get_cv_surv(decomp, modelf, outcome.status.name, outcome.time.name,
     #                                                                              other.predictors, genelists, arbitrary.models, use.s))
     # cis <- do.call(rbind, cis)
@@ -325,7 +331,9 @@ associate_survival_outcome <- function(
       c.index     = colMeans(cis, na.rm = TRUE),
       c.index.sd  = apply(cis, 2, sd, na.rm = TRUE),
       best.factor = best.factor,
-      best.other = best.other
+      best.other = best.other,
+      pairwise.wilcox.tests = pairwise.wilcox.tests,
+      stored_samples = store
       )
     }, error = function(e) {
       warning("Error in parallel execution: ", e, "\n returning parallel output...\n")
@@ -338,6 +346,23 @@ associate_survival_outcome <- function(
   }
 }
 
+# Compare strategy columns using matched CV replicates (matrix rows).
+get_pairwise_wilcox_tests <- function(performance) {
+   p.values <- stats::pairwise.table(function(i, j) {
+           x <- performance[, i]
+           y <- performance[, j]
+         complete <- complete.cases(x, y)
+           if (!any(complete) || all(x[complete] == y[complete])) return(NA_real_)
+           stats::wilcox.test(x[complete], y[complete], paired = TRUE, exact = FALSE)$p.value
+         }, colnames(performance), p.adjust.method = "none")
+
+        structure(list(
+            method = "Wilcoxon signed rank test with continuity correction",
+             data.name = "CV performance across replicates",
+             p.value = p.values,
+             p.adjust.method = "none"
+           ), class = "pairwise.htest")
+     }
 
 get_cv <- function(decomp, modelf, outcome.name, other.predictors, genelists, use.s) {
   factor_cols <- get_factor_columns(decomp)
@@ -432,7 +457,7 @@ get_cv <- function(decomp, modelf, outcome.name, other.predictors, genelists, us
     Idents(forde) <- ifelse(forde$group, "top", "bottom")
     #browser()
 
-    de <- Seurat::FindMarkers(forde, ident.1 = "top", min.pcr = 0.2, logfc.threshold = 0.5)
+    de <- Seurat::FindMarkers(forde, ident.1 = "top", min.pct = 0.2, logfc.threshold = 0.5) #there was a typo in this function, it was min.pcr (so ignored)
     de <- de[order(de$p_val),]
     usegenes <- rownames(de)[1:50]
 
@@ -615,16 +640,32 @@ get_cv_binary <- function(decomp, modelf, outcome.name, other.predictors, geneli
       modelf$predicted_other_predictors[modelf$set == i] <-
         predict(mo_other_predictors, test, type = "response")
 
-      mm_train_other <- get_model_matrix(train, other.cols)
-      if (ncol(mm_train_other) > 0) {
-        mm_test_other <- get_model_matrix(test, other.cols, terms.obj = attr(mm_train_other, "terms"))
-        mo_other_predictors_lasso <- glmnet::cv.glmnet(mm_train_other,
-                                                       train[, outcome.name],
-                                                       family = "binomial")
-        modelf$predicted_other_predictors_lasso[modelf$set == i] <-
-          as.numeric(predict(mo_other_predictors_lasso,
-                             mm_test_other,
-                             s = use.s, type = "response"))
+      # model.matrix omits missing predictors: subset x and y together, and
+      # retain NA predictions for held-out samples with unavailable scores.
+      train_complete <- complete.cases(train[, other.cols, drop = FALSE])
+      test_complete <- complete.cases(test[, other.cols, drop = FALSE])
+      train_other <- train[train_complete, , drop = FALSE]
+      test_other <- test[test_complete, , drop = FALSE]
+      if (nrow(train_other) >= 3 && any(test_complete) &&
+          length(unique(train_other[[outcome.name]])) == 2) {
+        mm_train_other <- get_model_matrix(train_other, other.cols)
+        if (ncol(mm_train_other) > 0) {
+          mm_test_other <- get_model_matrix(test_other, other.cols,
+                                            terms.obj = attr(mm_train_other, "terms"))
+          # glmnet requires at least two columns. A zero column lets it fit
+          # a single predictor without changing the penalized model.
+          if (ncol(mm_train_other) == 1L) {
+            mm_train_other <- cbind(mm_train_other, 0)
+            mm_test_other <- cbind(mm_test_other, 0)
+          }
+          mo_other_predictors_lasso <- glmnet::cv.glmnet(
+            mm_train_other, train_other[[outcome.name]], family = "binomial"
+          )
+          test_rows <- which(modelf$set == i)[test_complete]
+          modelf$predicted_other_predictors_lasso[test_rows] <-
+            as.numeric(predict(mo_other_predictors_lasso, mm_test_other,
+                               s = use.s, type = "response"))
+        }
       }
     }
 
