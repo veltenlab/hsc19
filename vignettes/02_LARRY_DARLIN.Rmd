@@ -383,3 +383,58 @@ fig3f <- ggplot(aes(x = best, y = simplegroup, color = simplegroup), data=for_co
 
 print(fig3f)
 ```
+
+### Precision–recall performance for binary activity
+
+auPRC is computed as average precision on held-out predictions, with active
+clones as the positive class. Continuous output outcomes are excluded. As in
+Figure 3F, the best supervised model is selected by the displayed metric.
+
+```{r fig3f-auprc, fig.width=6, fig.height=2.8}
+D_pr <- D[vapply(D, function(x) !is.null(x$auprcs), logical(1))]
+pr_performance <- data.frame(
+  measure = do.call(c, lapply(D_pr, function(x) names(x$auprcs))),
+  auprc = do.call(c, lapply(D_pr, "[[", "auprcs")),
+  auprc.sd = do.call(c, lapply(D_pr, "[[", "auprcs.sd")))
+pr_performance$experiment <- ifelse(grepl("larry", rownames(pr_performance)), "LARRY", "DARLIN")
+pr_performance$phenotype <- gsub(".+_(\\D+)\\d+","\\1",rownames(pr_performance))
+pr_performance$zeroshot <- pr_performance$measure %in% c("R2.best.factor", "R2.best.other", "AUC.best.factor", "AUC.best.other")
+pr_performance$grouping <- with(pr_performance, ifelse(zeroshot, measure,ifelse(measure %in% c("AUC.lasso.factors","R2.lasso.factors"), "Supervised ML", "Supervised ML")))
+simple <- ddply(pr_performance, c("experiment","phenotype", "grouping"), summarise,
+                best = max(auprc),
+                best.sd = auprc.sd[which.max(auprc)],
+                which.best =  measure[which.max(auprc)],
+                percent = ifelse( grepl("best.factor|best.other", unique(grouping)),
+                                 max(D_pr[[sprintf("%s_%s", tolower(unique(experiment)), unique(phenotype))]][[gsub("AUC.|R2.", "", unique(grouping))]]), NA),
+                best.list = ifelse( grepl("best.factor|best.other", unique(grouping)),
+                                              names(which.max(D_pr[[sprintf("%s_%s", tolower(unique(experiment)), unique(phenotype))]][[gsub("AUC.|R2.", "", unique(grouping))]])), NA)
+
+                )
+simple$best.list[is.na(simple$best.list)] <- simple$grouping[is.na(simple$best.list)]
+otherlevels <- unique(simple$best.list); otherlevels <- otherlevels[!otherlevels %in% c("Supervised ML", factor_levels ) ]
+simple$best.list <- factor(simple$best.list, levels = rev(c("Supervised ML", factor_levels, otherlevels )))
+simple$which.best <- factor(simple$which.best, levels = c("R2.best.factor", "R2.best.other", "AUC.best.factor", "AUC.best.other", unique(simple$which.best[simple$grouping == "Supervised ML"])))
+
+ylabels <- gsub("Factor_", "GRP ", unique(simple$best.list)); names(ylabels) <- unique(simple$best.list)
+ylabels["High.output_Rodriguez_et_al"] <- "High output"
+ylabels["Serial.engraftment_Rodriguez_et_al"] <- "Serial engraftment"
+ylabels["Multilineage_Rodriguez_et_al"] <- "Multilineage"
+ylabels["dHSC_aHSC_single.cell_Cabezas.Wallscheid_et_al"] <- "dHSC vs. aHSC"
+
+for_combined_plot <- simple
+for_combined_plot$simplegroup <- with(for_combined_plot, factor(gsub("AUC.|R2.", "", grouping), levels = rev(c("Supervised ML", "best.factor", "best.other"))))
+faclabels <- c("output" = "output (R2)", "activity" = "activity (auPRC)")
+collabels <- c("Supervised ML" = "Full transcriptome\n(Supervised ML)", "best.other" = "Best published\nTx signature", "best.factor" = "Best GRP")
+
+fig3f_auprc <- ggplot(aes(x = best, y = simplegroup, color = simplegroup), data=for_combined_plot) + geom_point() +
+  geom_errorbarh(aes(xmin= best-best.sd, xmax = best+best.sd), height=0.1) +
+  geom_text_repel(aes(label = ylabels[as.character(best.list)]), color = "black",size=3, data = subset(for_combined_plot, best.list != "Supervised ML")) +
+  facet_wrap( ~  factor(experiment, levels = c("LARRY", "DARLIN")) + faclabels[phenotype], scales="free_x", nrow=1) +
+  theme_bw(base_size=14) + theme(panel.grid = element_blank(), legend.position = "none",axis.text.x =element_text(size=8)) + scale_y_discrete(labels = collabels, name = "Predictor") +
+  xlab("Cross-validated auPRC (mean ± SD)") + scale_x_continuous() +
+  scale_color_manual( values = c("Supervised ML" = "#666666", "best.other" = "darkblue", "best.factor" = "orange"),
+                      name = "Predictor", labels = collabels) +
+ geom_vline(aes(xintercept = best), data=subset(for_combined_plot, grouping == "Supervised ML"), linetype = 3)
+
+print(fig3f_auprc)
+```

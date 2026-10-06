@@ -219,3 +219,22 @@ ggplot(performance, aes(auc, model)) +
   xlab("Cross-validated ROC AUC (mean ± SD)") + ylab(NULL) +
   theme_bw() + theme(panel.grid = element_blank())
 ```
+
+The corresponding auPRCs use average precision, with responders as the positive
+class, and summarize the same held-out predictions across CV replicates.
+
+```{r auprc-plot, fig.width=6, fig.height=3}
+pr_performance <- data.frame(
+  model = names(grp2output_vv$auprcs), auprc = grp2output_vv$auprcs,
+  sd = grp2output_vv$auprcs.sd
+)
+pr_performance <- subset(pr_performance, model %in% names(model_labels))
+pr_performance$model <- factor(pr_performance$model, levels = rev(names(model_labels)))
+ggplot(pr_performance, aes(auprc, model)) +
+  geom_point() +
+  geom_errorbar(aes(xmin = auprc - sd, xmax = auprc + sd),
+                orientation = "y", width = 0.1) +
+  scale_y_discrete(labels = model_labels) +
+  xlab("Cross-validated auPRC (mean ± SD)") + ylab(NULL) +
+  theme_bw() + theme(panel.grid = element_blank())
+```

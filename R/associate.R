@@ -121,7 +121,7 @@ associate_numeric_outcome<- function(decomp, metadata, outcome.name, other.predi
 #'@param replicates Number of times to repeat CV calculation with different train-test splits. Only used if \code{run.ML=TRUE}
 #'@param cores Number of cores to use (if replicates > 1)
 #'@param use.s Regularization to use for LASSO, one of \code{lambda.min} and \code{lambda.1se}
-#'@param ROCs If full ROC curves should be returned (if FALSE, only returns AUCs)
+#'@param ROCs Whether full ROC curves should also be returned. AUC and auPRC summaries are returned either way when run.ML=TRUE.
 #'
 #'@details	If \code{run.ML} is set, the function will set up a 10 fold cross validation scheme (or leave one out CV if <50 observations). On the train set, it will perform the following:
 #'\itemize{
@@ -134,6 +134,7 @@ associate_numeric_outcome<- function(decomp, metadata, outcome.name, other.predi
 #'}
 #'
 #'@return A list with entries \code{p.values} and, if \code{run.ML} is set, \code{aucs}, their standard deviation across replicates, and info on the different folds
+#'The additional entries \code{auprcs} and \code{auprcs.sd} contain mean areas under the precision-recall curve and their standard deviations across CV replicates, with the same model names and order as \code{aucs}. Existing entries retain their positions. auPRC is computed as average precision (the stepwise integral, grouping tied scores), with TRUE/1 as the positive class and higher predicted probabilities indicating that class. Missing predictions are omitted per model; estimates are NA when either class is absent.
 #'@export
 associate_binary_outcome<- function(decomp, metadata, outcome.name, other.predictors=NULL, arbitrary.models = NULL, genelists = NULL, run.ML=T, cores = 6, replicates = 3, use.s = "lambda.min", ROCs = F) {
 
@@ -177,6 +178,7 @@ associate_binary_outcome<- function(decomp, metadata, outcome.name, other.predic
     }
 
     aucs <- do.call(rbind,lapply(cv_result, "[[", 1))
+    auprcs <- do.call(rbind, lapply(cv_result, "[[", "auprcs"))
     best.factor <- table(unlist(lapply(cv_result, "[[",2)))
     best.other <- table(unlist(lapply(cv_result, "[[",3)))
     store <- vapply(cv_result, function(x) unname(x$aucs["AUC.best.factor"]), numeric(1))
@@ -184,9 +186,9 @@ associate_binary_outcome<- function(decomp, metadata, outcome.name, other.predic
 
     if (ROCs)  {
       rocs <- lapply(cv_result, "[[", 4)
-      return(list(p.values = p.values, aucs = colMeans(aucs), aucs.sd = apply(aucs, 2,sd), best.factor = best.factor, best.other = best.other, rocs = rocs, pairwise.wilcox.tests = pairwise.wilcox.tests, stored_samples = store))
+      return(list(p.values = p.values, aucs = colMeans(aucs), aucs.sd = apply(aucs, 2,sd), best.factor = best.factor, best.other = best.other, rocs = rocs, pairwise.wilcox.tests = pairwise.wilcox.tests, stored_samples = store, auprcs = colMeans(auprcs), auprcs.sd = apply(auprcs, 2, sd)))
     } else {
-      return(list(p.values = p.values, aucs = colMeans(aucs), aucs.sd = apply(aucs, 2,sd), best.factor = best.factor, best.other = best.other, pairwise.wilcox.tests = pairwise.wilcox.tests, stored_samples = store))
+      return(list(p.values = p.values, aucs = colMeans(aucs), aucs.sd = apply(aucs, 2,sd), best.factor = best.factor, best.other = best.other, pairwise.wilcox.tests = pairwise.wilcox.tests, stored_samples = store, auprcs = colMeans(auprcs), auprcs.sd = apply(auprcs, 2, sd)))
       }
 
     # aucs <- get_cv_binary(decomp, modelf, outcome.name, other.predictors, genelists, use.s)
@@ -542,6 +544,26 @@ get_auc <- function(probs, y) {
   as.numeric(pROC::auc(y, probs, quiet = TRUE))
 }
 
+# Stepwise PR area (average precision); ties enter the curve together.
+get_auprc <- function(probs, y) {
+  if (is.factor(y)) {
+    if (nlevels(y) != 2L) stop("Outcome must be binary.")
+    y <- as.integer(y == levels(y)[2])
+  }
+  if (!all(y[!is.na(y)] %in% c(0, 1))) stop("Outcome must be binary.")
+  keep <- !is.na(probs) & !is.na(y)
+  probs <- probs[keep]
+  y <- as.integer(y[keep])
+  if (length(unique(y)) < 2L) return(NA_real_)
+  ord <- order(probs, decreasing = TRUE)
+  y <- y[ord]
+  thresholds <- cumsum(rle(probs[ord])$lengths)
+  tp <- cumsum(y)[thresholds]
+  recall <- tp / sum(y)
+  precision <- tp / thresholds
+  sum(diff(c(0, recall)) * precision)
+}
+
 get_full_auc <- function(probs, y) {
   if (all(is.na(probs))) return(NA_real_)
   # coerce y to factor with positive level last (pROC uses the second level as "event")
@@ -798,6 +820,27 @@ get_cv_binary <- function(decomp, modelf, outcome.name, other.predictors, geneli
     aucs <- c(aucs, sapply(predicted_arbitrary, function(x) get_auc(x, y_all)))
   }
 
+  # Use the same predictions, model names and ordering as the ROC AUCs.
+  auprcs <- c(
+    AUC.best.factor   = get_auprc(modelf[, "predicted_best_factor"],   y_all),
+    AUC.best.other    = get_auprc(modelf[, "predicted_best_other"],    y_all),
+    AUC.logit.other.predictors = get_auprc(modelf[, "predicted_other_predictors"], y_all),
+    AUC.lasso.other.predictors = get_auprc(modelf[, "predicted_other_predictors_lasso"], y_all),
+    AUC.logit.factors = get_auprc(modelf[, "predicted_factors"],       y_all),
+    AUC.lasso.factors = get_auprc(modelf[, "predicted_factors_lasso"], y_all),
+    AUC.logit.de      = get_auprc(modelf[, "predicted_de"],            y_all),
+    AUC.lasso.de      = get_auprc(modelf[, "predicted_de_lasso"],      y_all),
+    AUC.logit.pcr     = get_auprc(modelf[, "predicted_pcr"],           y_all),
+    AUC.lasso.pcr     = get_auprc(modelf[, "predicted_pcr_lasso"],     y_all)
+  )
+
+  if (length(genelists) > 0) {
+    auprcs <- c(auprcs, sapply(predicted_genelists, function(x) get_auprc(x, y_all)))
+  }
+  if (length(arbitrary.models) > 0) {
+    auprcs <- c(auprcs, sapply(predicted_arbitrary, function(x) get_auprc(x, y_all)))
+  }
+
   if (ROCs) {
     rocs <- list(
       AUC.best.factor   = get_full_auc(modelf[, "predicted_best_factor"],   y_all),
@@ -819,9 +862,9 @@ get_cv_binary <- function(decomp, modelf, outcome.name, other.predictors, geneli
       rocs <- c(rocs, lapply(predicted_arbitrary, function(x) get_full_auc(x, y_all)))
     }
 
-    return(list(aucs = aucs, best.factor = best_factors, best.other = best_others, rocs = rocs))
+    return(list(aucs = aucs, best.factor = best_factors, best.other = best_others, rocs = rocs, auprcs = auprcs))
   } else {
-    return(list(aucs = aucs, best.factor = best_factors, best.other = best_others))
+    return(list(aucs = aucs, best.factor = best_factors, best.other = best_others, auprcs = auprcs))
   }
 
 

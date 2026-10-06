@@ -39,10 +39,11 @@ associate_binary_outcome(
 
 \item{use.s}{Regularization to use for LASSO, one of \code{lambda.min} and \code{lambda.1se}}
 
-\item{ROCs}{If full ROC curves should be returned (if FALSE, only returns AUCs)}
+\item{ROCs}{Whether full ROC curves should also be returned. AUC and auPRC summaries are returned either way when run.ML=TRUE.}
 }
 \value{
 A list with entries \code{p.values} and, if \code{run.ML} is set, \code{aucs}, their standard deviation across replicates, and info on the different folds
+The additional entries \code{auprcs} and \code{auprcs.sd} contain mean areas under the precision-recall curve and their standard deviations across CV replicates, with the same model names and order as \code{aucs}. Existing entries retain their positions. auPRC is computed as average precision (the stepwise integral, grouping tied scores), with TRUE/1 as the positive class and higher predicted probabilities indicating that class. Missing predictions are omitted per model; estimates are NA when either class is absent.
 }
 \description{
 This function takes a decomposition object and a metadata frame with a binary (TRUE/FALSE) outcome and, if available, other predictors. It will then a) compute statistical associations between
