@@ -1,0 +1,5 @@
+^manuscript_figures$
+^vignettes/output$
+^vignettes/data_LARRY/seurat_LK_LSK\.RDS$
+^\.gitattributes$
+^\.gitignore$
