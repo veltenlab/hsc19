@@ -30,7 +30,7 @@ get_factor_columns <- function(decomp) {
 #'@param decomp Object of class \code{\link{decomposition}}, output from \code{\link{decompose}}
 #'@param metadata A data frame with rownames corresponding to column names of \code{decomp} that contains the outcome of interest and any other predictors that should be tested
 #'@param outcome.name Column name from \code{metadata} that contains the outcome of interest
-#'@param other.predictors Names of any other columns in \code{metadata} that may serve as 0-shot predictors for the outcome
+#'@param other.predictors Names of any other columns in \code{metadata} that may serve as 0-shot predictors for the outcome. See details for how these predictors are treated.
 #'@param run.ML Whether to run machine-learning models.
 #'@param genelists List of character vectors of gene names. If \code{run.ML=TRUE}, LASSO regression using these genes as input will be performed and compared to the other models.
 #'@param replicates Number of times to repeat CV calculation with different train-test splits. Only used if \code{run.ML=TRUE}
@@ -39,11 +39,12 @@ get_factor_columns <- function(decomp) {
 #'
 #'@details	If \code{run.ML} is set, the function will set up a 10 fold cross validation scheme (or leave one out CV if <50 observations). On the train set, it will perform the following:
 #'\itemize{
+#'\item{On each train set, select the most predictive GRP and evaluate its predictive power on the test set.}
+#'\item{If \code{other.predictors} are provided, select the most predictive of these and evaluate its predictive power on the test set.}
 #'\item{Perform principal component regression on 18 PCs computed on highly variable genes from the underlying Seurat object}
 #'\item{Perform LASSO regularized principal component regression on 50 PCs computed on highly variable genes from the underlying Seurat object}
 #'\item{Perform DE testing between samples from the highest and lowest quartile of the outcome, and perform LASSO or linear regression on the top DE features}
 #'\item{Perform LASSO and linear regression on the 18 GRPs from the decomposition}
-#'\item{If \code{other.predictors} are provided, perform LASSO and linear regression on all available precomputed predictors}
 #'\item{If \code{genelists} are provided, perform LASSO on the genes from the gene lists}
 #'}
 #'

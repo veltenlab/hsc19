@@ -26,14 +26,19 @@ This vignette decomposes HSC transcriptomes from [a large scale resource on huma
 
 ## Data preparation
 
-Step 1 (not run): Download data from [CellXGene](https://cellxgene.cziscience.com/collections/5542eeb0-96ef-4ab9-95ea-eb6abc178461)
+**Input into the decompsoe function is bulk RNA-seq data of HSCs/MPPs.** Here, these bulk expression signatures are computed by subsetting a single cell data set to HSCs/MPPs and computing pseudobulks. In other scenarios (cf. Venetoclax vignette), bulk RNA-seq data of FACS-sorted HSCs/MPPs is used. The workflows used in these vignettes assume integer count data, and apply appropriate normalization routines.
+
+<details>
+<summary><strong>The first two steps of data preparation are to download the Furer et al. single cell RNA-seq data, subset to HSC/MPP and and create  pseudobulks.</strong> The result of this step is made available in the folder data_ageing, and step 1 and 2 of data preparation are not run by default. Click to expand and make the code visible.</summary>
+
+### Step 1 (not run): Download data from [CellXGene](https://cellxgene.cziscience.com/collections/5542eeb0-96ef-4ab9-95ea-eb6abc178461)
 
 ```{bash download, eval=F}
 wget -O furer_ultima.h5ad https://datasets.cellxgene.cziscience.com/fd9e6b84-4687-44cb-a61e-1b261c05c414.h5ad
 wget -O furer_illumina.h5ad https://datasets.cellxgene.cziscience.com/00414a7b-5aba-4c51-ad1e-d6caa6b1ebf3.h5ad
 ```
 
-Step 2 (not run): Create patient-level pseudobulks of HSCs - shown for ultima data
+### Step 2 (not run): Create patient-level pseudobulks of HSCs - shown for ultima data
 
 ```{python pseudobulk, eval=F}
 
@@ -75,7 +80,11 @@ pseudobulk_matrix = pd.DataFrame(
 pseudobulk_matrix.transpose().to_csv("Furer_et_al_ultima_pseudobulks.csv.gz", compression='gzip')
 ```
 
-Step 3: Load pseudobulks in R, create Seurat object
+</details>
+
+### Step 3: Load pseudobulks in R, create Seurat object
+
+The following code block creates a Seurat object of pseudobulks and performs normalization. It also prepares a metadata frame with metadata for each column (sample) from the Seurat object.
 
 ```{r prepareSeurat, eval=T}
 illumina_pseudobulks <- read.csv("data_ageing/Furer_et_al_illumina_pseudobulks.csv.gz", row.names = 1)
@@ -101,13 +110,17 @@ metadata_final <- metadata[colnames(S),]
 
 ## Decompose data into GRPs
 
+The decompose function is the central piece of the hsc 19 package. It takes a seurat object (or a count matrix) and decomposes into estimated activities of gene programs defined by a real-valued matrix of gene weights. By default, the GRPs from the manuscript are used. Alternatively, a matrix of genes x programs can be provided as parameter `loadings`. See function documentation for full specification of parameters and return values.
+
 ```{r decompose}
 result <- decompose(s = S)
 ```
 
 ## Compute p-values: Association of GRPs with age (Figure S4A)
 
-The `associate` function, in its basic use, computes p-value associations.
+The `associate` function, in its basic use, computes p-value associations between programs and a feature/outcome of interest from a metadata frame. Rows in the metadata frame should correspond to columns from the seurat object used for decomposition. The below example computes p values for the association between (estimated) program activities and the metadata variable "age". 
+
+There are different versions of `associate`, for numeric, binary and survival outcomes.
 
 ```{r pvalues, fig.width=5.5, fig.height=2.5}
 pvalues <- associate_numeric_outcome(result, metadata_final, "age", run.ML = F)$p.values
@@ -155,13 +168,16 @@ for (i in 1:10) {
 }
 ```
 
-Then, run several machine learning strategies to predict age from all available transcriptomic variables
+
+## General machine learning from the transcriptome (Figure 3C)
+
+Besides computing p-values, the `associate` function can also run and compare several black box machine learning strategies to predict the outcome/feature of interest from the transcriptome, beyond GRPs. It runs principal component regression, LASSO regression and differential expression testing followed by LASSO or linear regression on top DE features. ML is performed inside a 10-fold cross-validation loop. The best GRP is selected independently in each cross validation loop. The function can also compare GRPs to further, prespecified predictors (e.g. gene signatures from literature); see the remaining vignettes and the function documentation for these parameters, and documentation of the return value.
 
 ```{r associateML}
 ml <- associate_numeric_outcome(result, metadata_final, "age", other.predictors = NULL, run.ML = T, replicates = 10, cores = 10, genelists = NULL)
 ```
 
-Finally, plot
+Finally, make a plot that compares the predictive power of GRP3, the linear model from all GRPs, and the black-box machine learning result
 
 ```{r plotClock, fig.width=3.5,fig.height=2.5}
 r2s <- data.frame(

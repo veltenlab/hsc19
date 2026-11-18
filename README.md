@@ -2,7 +2,7 @@ Package to decompose HSC gene expression data into 19 gene regulatory programs.
 
 To install, in R run `devtools::install_local("~/Downloads/hsc19-main")` (assuming that the package was downloaded to `~/Downloads/hsc19-main`).
 
-For usage info and to reproduce figures 3&4 from Bowness et al., 2026, see package vignettes.
+For usage info and to reproduce figures 3&4 from Bowness et al., 2026, see package vignettes. We recommend starting with the Ageing vignette, which illustrates the main functionalities of the package.
 
 To reproduce figures 1&2, see folder `manuscript_figures`.
 
