@@ -4,12 +4,13 @@
 #'
 #'This class stores the results of \code{\link{decompose}}
 #'
-#'@slot result inferred activity of the 18 GRPs per sample
+#'@slot result Matrix with the inferred activity of the GRPs per sample: one row per program, plus a row "(Intercept)"; one column per sample
 #'@slot factor_names Names of the factors/programs used for the decomposition
-#'@slot pca result of running `prcomp` on the HVGs of the input data
-#'@slot pve Percent variance explained
+#'@slot pca Seurat \code{DimReduc} object with the result of running PCA (\code{Seurat::RunPCA}, 50 PCs) on the variable features of the input data. Only populated if the data has more than 50 samples
+#'@slot pve Fraction of the gene expression variance (summed over the genes in \code{usegenes}) explained by the programs
 #'@slot s Seurat object that was used to create the decomposition
-#'@slot pve_pca Percent variant explained by 18 principal components
+#'@slot pve_pca Fraction of the gene expression variance (in \code{usegenes}) explained by as many principal components as there are programs
+#'@slot usegenes Genes (in the ID format of the input data) shared between the input data and the loadings, on which the decomposition was computed
 #'@export
 decomposition <- setClass(
   "decomposition",
@@ -21,14 +22,7 @@ decomposition <- setClass(
     pca = "DimReduc",
     s = "Seurat",
     usegenes = "character"
-  ),
-  validity = function(object) {
-    if (!inherits(object@pca, "prcomp")) {
-      return("Slot 'pca' must be an object of class 'prcomp'")
-    }
-    TRUE
-  }
-
+  )
 )
 
 #' Show a decomposition object
@@ -37,7 +31,7 @@ decomposition <- setClass(
 #'
 #' @param object A \code{\link{decomposition}} object.
 #'
-#' @return Invisibly returns \code{object}.
+#' @return Called for its side effect of printing; returns \code{NULL} invisibly.
 #' @exportMethod show
 #' @aliases show,decomposition-method
 setMethod(
@@ -53,9 +47,9 @@ setMethod(
 #' Get column names of a decomposition object
 #'
 #' @param x A \code{\link{decomposition}} object.
-#' @param do.NULL, prefix Passed to \code{\link[base]{colnames}}.
+#' @param do.NULL,prefix Passed to \code{\link[base]{colnames}}.
 #'
-#' @return A character vector of column names.
+#' @return A character vector of column names of the \code{result} slot, i.e. the sample/cell names.
 #' @exportMethod colnames
 #' @aliases colnames,decomposition-method
 setMethod(
@@ -69,7 +63,7 @@ setMethod(
 #' Set column names of a decomposition object
 #'
 #' @param x A \code{\link{decomposition}} object.
-#' @param value A character vector of new column names.
+#' @param value A character vector of new sample/cell names. Only the \code{result} slot is renamed; the Seurat object in slot \code{s} keeps its original names.
 #'
 #' @return The updated \code{\link{decomposition}} object.
 #' @exportMethod "colnames<-"
@@ -91,7 +85,7 @@ setReplaceMethod(
 #' @param include Samples/cells to keep. This is used to subset \code{x@result[, include]}
 #'   and is passed to \code{cells = include} in \code{\link[Seurat:subset.Seurat]{Seurat::subset()}}.
 #'
-#' @return A \code{\link{decomposition}} object containing only \code{include}.
+#' @return A \code{\link{decomposition}} object containing only \code{include}. The slots \code{pve}, \code{pve_pca} and \code{usegenes} are carried over unchanged and are not recomputed for the subset.
 #' @seealso \code{\link[base]{subset}}
 #' @exportMethod subset
 #' @aliases subset,decomposition-method

@@ -9,13 +9,13 @@ get_pert(factor, top = T, values = F)
 \arguments{
 \item{factor}{Name of a GRP, e.g. \code{"Factor_7"}}
 
-\item{top}{Whether to show positive or negative regulators}
+\item{top}{If \code{TRUE}, show perturbations with a positive effect on the GRP, otherwise those with a negative effect}
 
-\item{values}{Whether to return numerical factor loadings}
+\item{values}{Whether to return numerical effect sizes}
 }
 \value{
-Character vector of gene symbols, sorted by absolute value of the loading, or named numeric vector
+Character vector of guide IDs (e.g. \code{"Etv6-CRISPRi-sgRNA-1"}), sorted by absolute value of the effect, or, if \code{values = TRUE}, the corresponding named numeric vector of effects
 }
 \description{
-Show perturbations regulating a certain GRP
+Lists the CRISPRi perturbations (guides) with a non-zero effect on the GRP in the Perturb-Seq data (\code{hsc19_perturbation_beta}). Effects are multiplied with the \code{multiply_with} sign in \code{factor_annotation} for display; a message is printed if this flipped the sign.
 }

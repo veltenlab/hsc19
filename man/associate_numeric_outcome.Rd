@@ -21,34 +21,50 @@ associate_numeric_outcome(
 
 \item{metadata}{A data frame with rownames corresponding to column names of \code{decomp} that contains the outcome of interest and any other predictors that should be tested}
 
-\item{outcome.name}{Column name from \code{metadata} that contains the outcome of interest}
+\item{outcome.name}{Column name from \code{metadata} that contains the outcome of interest. Samples with a missing outcome are removed with a warning.}
 
-\item{other.predictors}{Names of any other columns in \code{metadata} that may serve as 0-shot predictors for the outcome}
+\item{other.predictors}{Names of any other columns in \code{metadata} that may serve as 0-shot predictors for the outcome. See details for how these predictors are treated.}
 
 \item{run.ML}{Whether to run machine-learning models.}
 
-\item{genelists}{List of character vectors of gene names. If \code{run.ML=TRUE}, LASSO regression using these genes as input will be performed and compared to the other models.}
+\item{genelists}{Named list of character vectors of gene names. If \code{run.ML=TRUE}, LASSO regression using these genes (those present in the Seurat object of \code{decomp}) as input will be performed and compared to the other models. The list names are used as model names in the output.}
 
 \item{cores}{Number of cores to use (if replicates > 1)}
 
 \item{replicates}{Number of times to repeat CV calculation with different train-test splits. Only used if \code{run.ML=TRUE}}
 
-\item{use.s}{Regularization to use for LASSO, one of \code{lambda.min} and \code{lambda.1se}}
+\item{use.s}{Regularization to use for LASSO, one of \code{lambda.min} and \code{lambda.1se}. Note that LASSO models on \code{genelists} always use the \code{glmnet} default (\code{lambda.1se}).}
 }
 \value{
-A list with entries \code{p.values} and, if \code{run.ML} is set, \code{r.squares}, their standard deviation across replicates, and info on the different folds
+A list. If \code{run.ML = FALSE}, it contains only \code{p.values}. Otherwise, it contains the following entries:
+\describe{
+\item{\code{p.values}}{Data frame with one row per tested predictor (all GRPs, followed by those \code{other.predictors} found in \code{metadata}) and columns \code{factor_id} (factor), \code{p_outcome} (p-value of the correlation test, not corrected for multiple testing) and \code{sign_outcome} (sign of the correlation).}
+\item{\code{r.squares}}{Named numeric vector with the cross-validated R-squared of each model, averaged across replicates. Names: \code{R2.best.factor}, \code{R2.best.other}, \code{R2.lm.factors}, \code{R2.lasso.factors}, \code{R2.lm.other.predictors}, \code{R2.lasso.other.predictors}, \code{R2.lm.de}, \code{R2.lasso.de}, \code{R2.lm.pcr}, \code{R2.lasso.pcr}, followed by one entry per element of \code{genelists}. Models that could not be run are \code{NA}.}
+\item{\code{r.squares.sd}}{Standard deviation of the R-squared values across replicates, same structure as \code{r.squares}.}
+\item{\code{best.factor}}{Table counting how often each GRP was selected as the best single GRP, across all CV folds and replicates.}
+\item{\code{best.other}}{The same for \code{other.predictors} (empty if none were supplied).}
+\item{\code{pairwise.wilcox.tests}}{Object of class \code{pairwise.htest}: unadjusted p-values of paired Wilcoxon signed rank tests comparing the R-squared of all pairs of models across replicates. Needs several \code{replicates} to be informative.}
+\item{\code{stored_samples}}{Numeric vector with the R-squared of \code{R2.best.factor} in each replicate.}
+}
+CV replicates that fail are dropped with a warning; an error is raised if all fail.
 }
 \description{
 This function takes a decomposition object and a metadata frame with a numeric outcome and, if available, other predictors. It will then a) compute statistical associations between
 all predictors and the outcome and b) compare the performance of all predictors to that of various supervised machine learning strategies (see details)
 }
 \details{
-If \code{run.ML} is set, the function will set up a 10 fold cross validation scheme (or leave one out CV if <50 observations). On the train set, it will perform the following:
+The association of each GRP (and each of the \code{other.predictors}) with the outcome is tested with a Pearson correlation test.
+
+If \code{run.ML} is set, the function will set up a 10 fold cross validation scheme (or leave one out CV if <=50 observations). On the train set, it will perform the following:
 \itemize{
-\item{Perform principal component regression on 18 PCs computed on highly variable genes from the underlying Seurat object}
-\item{Perform LASSO regularized principal component regression on 50 PCs computed on highly variable genes from the underlying Seurat object}
-\item{Perform DE testing between samples from the highest and lowest quartile of the outcome, and perform LASSO or linear regression on the top DE features}
-\item{Perform LASSO and linear regression on the 18 GRPs from the decomposition}
-\item{If \code{genelists} are provided, perform LASSO on the genes from the gene lists}
+\item On each train set, select the most predictive GRP (lowest correlation p-value) and evaluate its predictive power on the test set.
+\item If \code{other.predictors} are provided, select the most predictive of these and evaluate its predictive power on the test set.
+\item If \code{other.predictors} are provided, perform linear regression and LASSO on all of them jointly
+\item Perform principal component regression on 18 PCs computed on highly variable genes from the underlying Seurat object
+\item Perform LASSO regularized principal component regression on up to 30 PCs computed on highly variable genes from the underlying Seurat object
+\item Perform DE testing between samples from the highest and lowest quartile of the outcome, and perform LASSO (top 50 DE genes) or linear regression (top 20 DE genes) on the top DE features
+\item Perform LASSO and linear regression on all GRPs from the decomposition
+\item If \code{genelists} are provided, perform LASSO on the genes from the gene lists
 }
+Predictive performance is quantified as the squared Pearson correlation between out-of-fold predictions and the observed outcome. Principal components are only available if \code{decomp} was computed on more than 50 samples (see \code{\link{decompose}}).
 }

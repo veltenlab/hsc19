@@ -9,11 +9,11 @@ plot_pert(factor, min.sig.gRNA = 2)
 \arguments{
 \item{factor}{Name of a GRP, e.g. \code{"Factor_7"}}
 
-\item{min.sig.gRNA}{Only include perturbations with this many significant gRNAs}
+\item{min.sig.gRNA}{Only include perturbations (genes) with at least this many significant gRNAs}
 }
 \value{
 ggplot2 object
 }
 \description{
-Plot perturbations regulating a certain GRP
+Shows, for each perturbed gene, the mean effect of its gRNAs on the GRP (multiplied with the \code{multiply_with} sign in \code{factor_annotation}), coloured by the number of gRNAs with a significant (non-zero) effect.
 }

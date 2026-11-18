@@ -16,5 +16,7 @@ A character vector of factor/program column names.
 Returns the factor/program names stored on a \code{\link{decomposition}} object.
 This is primarily useful for downstream code that needs to preserve the factor
 order used during decomposition, including custom loading matrices supplied to
-\code{\link{decompose}}.
+\code{\link{decompose}}. If no names are stored in the object, the row names
+of the \code{result} slot (excluding the intercept) are used, and failing that
+the column names of \code{hsc19_loadings}.
 }

@@ -9,10 +9,10 @@
 \arguments{
 \item{x}{A \code{\link{decomposition}} object.}
 
-\item{do.NULL, }{prefix Passed to \code{\link[base]{colnames}}.}
+\item{do.NULL, prefix}{Passed to \code{\link[base]{colnames}}.}
 }
 \value{
-A character vector of column names.
+A character vector of column names of the \code{result} slot, i.e. the sample/cell names.
 }
 \description{
 Get column names of a decomposition object

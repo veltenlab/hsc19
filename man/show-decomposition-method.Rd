@@ -10,7 +10,7 @@
 \item{object}{A \code{\link{decomposition}} object.}
 }
 \value{
-Invisibly returns \code{object}.
+Called for its side effect of printing; returns \code{NULL} invisibly.
 }
 \description{
 Print a short summary of a \code{\link{decomposition}}.

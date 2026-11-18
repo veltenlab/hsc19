@@ -25,13 +25,13 @@ associate_survival_outcome(
 
 \item{outcome.status.name}{Column name from \code{metadata} that contains the survival outcome (0 = censored, 1 = event)}
 
-\item{outcome.time.name}{Column name from \code{metadata} that contains the associated follow-up time}
+\item{outcome.time.name}{Column name from \code{metadata} that contains the associated follow-up time. Samples with missing time or status are removed with a warning.}
 
 \item{other.predictors}{Names of any other columns in \code{metadata} that may serve as 0-shot predictors for the outcome}
 
-\item{arbitrary.models}{Arbitrary linear regression models, based on columns of \code{metadata}, that should also be included in the comparison.}
+\item{arbitrary.models}{Arbitrary Cox regression models, based on columns of \code{metadata}, that should also be included in the comparison. A character vector of formula right-hand sides (e.g. \code{c(age_sex = "age + sex")}); the names are used as model names in the output.}
 
-\item{genelists}{List of character vectors of gene names. If \code{run.ML=TRUE}, LASSO regression using these genes as input will be performed and compared to the other models.}
+\item{genelists}{Named list of character vectors of gene names. If \code{run.ML=TRUE}, LASSO Cox regression using these genes (those present in the Seurat object of \code{decomp}) as input will be performed and compared to the other models. The list names are used as model names in the output.}
 
 \item{run.ML}{Whether to run machine-learning models.}
 
@@ -42,19 +42,36 @@ associate_survival_outcome(
 \item{use.s}{Regularization to use for LASSO, one of \code{lambda.min} and \code{lambda.1se}}
 }
 \value{
-A list with entries \code{p.values} and, if \code{run.ML} is set, \code{aucs}, their standard deviation across replicates, and info on the different folds
+A list. If \code{run.ML = FALSE}, it contains only \code{p.values}. Otherwise, it contains the following entries:
+\describe{
+\item{\code{p.values}}{Data frame with one row per tested predictor (all GRPs, followed by those \code{other.predictors} found in \code{metadata}) and columns \code{factor_id} (factor), \code{p_outcome} (Wald p-value of the Cox model, not corrected for multiple testing) and \code{sign_outcome} (sign of the Cox coefficient multiplied by -1; positive means higher values are associated with better survival).}
+\item{\code{c.index}}{Named numeric vector with Harrell's C-index of the out-of-fold risk scores of each model, averaged across replicates. Each C-index is computed as the larger of the C-index of the score and of its negative, so values are >= 0.5 and do not indicate the direction of effect. Names: \code{C.best.factor}, \code{C.best.other}, \code{C.cox.other.predictors}, \code{C.lasso.other.predictors}, \code{C.cox.factors}, \code{C.lasso.factors}, \code{C.cox.de}, \code{C.lasso.de}, \code{C.cox.pcr}, \code{C.lasso.pcr}, followed by one entry per element of \code{genelists} and of \code{arbitrary.models}. Models that could not be run are \code{NA}.}
+\item{\code{c.index.sd}}{Standard deviation of the C-indices across replicates, same structure as \code{c.index}.}
+\item{\code{best.factor}}{Table counting how often each GRP was selected as the best single GRP, across all CV folds and replicates.}
+\item{\code{best.other}}{The same for \code{other.predictors} (empty if none were supplied).}
+\item{\code{pairwise.wilcox.tests}}{Object of class \code{pairwise.htest}: unadjusted p-values of paired Wilcoxon signed rank tests comparing the C-indices of all pairs of models across replicates. Needs several \code{replicates} to be informative.}
+\item{\code{stored_samples}}{Numeric vector with the C-index of \code{C.best.factor} in each replicate.}
+}
+CV replicates that fail are dropped with a warning; an error is raised if all fail.
 }
 \description{
-This function takes a decomposition object and a metadata frame with a binary (TRUE/FALSE) outcome and, if available, other predictors. It will then a) compute statistical associations between
+This function takes a decomposition object and a metadata frame with a survival outcome (follow-up time and event status) and, if available, other predictors. It will then a) compute statistical associations between
 all predictors and the outcome and b) compare the performance of all predictors to that of various supervised machine learning strategies (see details)
 }
 \details{
-If \code{run.ML} is set, the function will set up a 10 fold cross validation scheme (or leave one out CV if <50 observations). On the train set, it will perform the following:
+The association of each GRP (and each of the \code{other.predictors}) with survival is tested with a univariate Cox proportional hazards model (Efron ties).
+
+If \code{run.ML} is set, the function will set up a 10 fold cross validation scheme (or leave one out CV if <=50 observations). On the train set, it will perform the following:
 \itemize{
-\item{Perform principal component regression on 18 PCs computed on highly variable genes from the underlying Seurat object}
-\item{Perform LASSO regularized principal component regression on 50 PCs computed on highly variable genes from the underlying Seurat object}
-\item{Perform DE testing between samples from the highest and lowest quartile of the outcome, and perform LASSO or linear regression on the top DE features}
-\item{Perform LASSO and linear regression on the 18 GRPs from the decomposition}
-\item{If \code{genelists} are provided, perform LASSO on the genes from the gene lists}
+\item On each train set, select the GRP with the lowest univariate Cox p-value and evaluate its predictive power on the test set.
+\item If \code{other.predictors} are provided, select the most predictive of these in the same way and evaluate its predictive power on the test set.
+\item Perform principal component regression (Cox) on 18 PCs computed on highly variable genes from the underlying Seurat object
+\item Perform LASSO regularized Cox principal component regression on up to 30 PCs computed on highly variable genes from the underlying Seurat object
+\item Among the events in the train set (at least 20 are required), perform DE testing between samples from the longest and shortest quartile of follow-up times, and perform LASSO Cox (top 50 DE genes) or Cox regression (top 20 DE genes) on the top DE features
+\item Perform LASSO and Cox regression on all GRPs from the decomposition
+\item If \code{other.predictors} are provided, perform LASSO and Cox regression on all available precomputed predictors
+\item If \code{genelists} are provided, perform LASSO Cox on the genes from the gene lists
+\item If \code{arbitrary.models} are provided, fit these Cox models
 }
+Principal components are only available if \code{decomp} was computed on more than 50 samples (see \code{\link{decompose}}).
 }

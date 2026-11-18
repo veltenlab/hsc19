@@ -73,13 +73,15 @@ rownames(clone_info) <- clone_info$LARRY
 
 ### Decompose data into GRPs
 
+See Ageing vignette or function documentation.
+
 ```{r decompose}
 result_larry <- decompose(s = larry_HSC_pseudobulk)
 ```
 
 ### Associate GRPs with clone function
 
-The `associate` function here computes both p-value associations, and runs machine learning to compare the predictve value of these predictors, other predictors, and the whole transcriptome (see also manuscript, methods section)
+The `associate` function here computes both p-value associations, and runs machine learning to compare the predictve value of these predictors, other pre-computed predictors, and the whole transcriptome (see also manuscript, methods section). 
 
 ```{r associate}
 grp2output_larry_output <- associate_numeric_outcome(result_larry, clone_info, "output_log", other.predictors = names(alejo_lists), run.ML = T, replicates = 10, cores = 10, genelists = alejo_lists)

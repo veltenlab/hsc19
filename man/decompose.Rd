@@ -2,20 +2,23 @@
 % Please edit documentation in R/decompose.R
 \name{decompose}
 \alias{decompose}
-\title{Decompose RNA-seq data into 18 gene regulatory programs}
+\title{Decompose RNA-seq data into 19 gene regulatory programs}
 \usage{
 decompose(counts = NULL, s = NULL, loadings = hsc19_loadings)
 }
 \arguments{
 \item{counts}{Count matrix, with gene IDs as row names and sample identifiers as column names. Supported gene name formats are mouse or human gene symbols (preferred), or ENSEMBL (ENSG/ENSMUSG) IDs.}
 
-\item{s}{A seurat object, with \code{NormalizeData} and \code{FindVariableFeatures} run. One of \code{counts} or \code{s} needs to be provided. If \code{counts} is provided, \code{s} is ignored.}
+\item{s}{A seurat object, with \code{NormalizeData} and \code{FindVariableFeatures} run. One of \code{counts} or \code{s} needs to be provided. If \code{counts} is provided, \code{s} is ignored. The normalized data of the default assay are used.}
 
-\item{loadings}{Loading matrix with genes in rows and factors/programs in columns. Defaults to \code{hsc19_loadings}.}
+\item{loadings}{Loading matrix with genes (mouse gene symbols, as in \code{hsc19_loadings}) in rows and factors/programs in columns. Row and column names must be present and unique. Defaults to \code{hsc19_loadings}.}
 }
 \value{
-Returns an object of class \code{\link{decomposition}}
+Returns an object of class \code{\link{decomposition}}, with the inferred activity of each program in each sample in the \code{result} slot.
 }
 \description{
 Ideally run this function on RNA-seq data of HSCs, e.g. bulk RNA-seq data of CD34+ cells (human) or LSK cells (mouse), or single cell data subset to HSCs. This function can run on bulk, pseudobulk or single cell RNA-seq.
+}
+\details{
+The species and gene ID format of the data (human or mouse; symbols or ENSEMBL IDs) is detected from the row names, and the row names of \code{loadings} (mouse gene symbols for \code{hsc19_loadings}) are converted accordingly with \code{\link{convertIDs}}. For each sample, the log-normalized expression of the genes shared between data and loadings is regressed on the loadings with a linear model; the coefficients are the inferred program activities. If \code{counts} is provided, a Seurat object is created and normalized internally. If the data contain more than 50 samples, a PCA (50 PCs, on the variable features) is also computed and stored, as it is required by the machine learning models in the \code{associate_*} functions. A summary of the variance explained is printed.
 }

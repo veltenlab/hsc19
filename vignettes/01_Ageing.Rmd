@@ -22,11 +22,11 @@ library(ggplot2)
 
 ## Summary
 
-This vignette decomposes HSC transcriptomes from [a large scale resource on human ageing](https://www.nature.com/articles/s41591-025-03716-5) into nineteen gene regulatory programs. It demonstrates the basic use of the `decompose` and `associate` functions, and reproduces figures 3B and C from the manuscript.
+This vignette decomposes HSC transcriptomes from [a large scale resource on human ageing](https://www.nature.com/articles/s41591-025-03716-5) into nineteen gene regulatory programs. It demonstrates the basic use of the `decompose` and `associate` functions, and reproduces figure S8 from the manuscript.
 
 ## Data preparation
 
-**Input into the decompsoe function is bulk RNA-seq data of HSCs/MPPs.** Here, these bulk expression signatures are computed by subsetting a single cell data set to HSCs/MPPs and computing pseudobulks. In other scenarios (cf. Venetoclax vignette), bulk RNA-seq data of FACS-sorted HSCs/MPPs is used. The workflows used in these vignettes assume integer count data, and apply appropriate normalization routines.
+**Input into the decompose function is bulk RNA-seq data of HSCs/MPPs.** Here, these bulk expression signatures are computed by subsetting a single cell data set to HSCs/MPPs and computing pseudobulks. In other scenarios (cf. Venetoclax vignette), bulk RNA-seq data of FACS-sorted HSCs/MPPs is used. The workflows used in these vignettes assume integer count data, and apply appropriate normalization routines.
 
 <details>
 <summary><strong>The first two steps of data preparation are to download the Furer et al. single cell RNA-seq data, subset to HSC/MPP and and create  pseudobulks.</strong> The result of this step is made available in the folder data_ageing, and step 1 and 2 of data preparation are not run by default. Click to expand and make the code visible.</summary>
@@ -116,7 +116,7 @@ The decompose function is the central piece of the hsc 19 package. It takes a se
 result <- decompose(s = S)
 ```
 
-## Compute p-values: Association of GRPs with age (Figure S4A)
+## Compute p-values: Association of GRPs with age (Figure S8B)
 
 The `associate` function, in its basic use, computes p-value associations between programs and a feature/outcome of interest from a metadata frame. Rows in the metadata frame should correspond to columns from the seurat object used for decomposition. The below example computes p values for the association between (estimated) program activities and the metadata variable "age". 
 
@@ -141,14 +141,14 @@ a <- qplot(x =  xval, y = reorder(factor_id,xval), color = as.factor(sign_outcom
  print(a)
 ```
 
-## Display correlation of GRP3 and Ageing (Figure 3B)
+## Display correlation of GRP3 and Ageing (Figure S8A)
 
 ```{r simpleplot, fig.width=2.5, fig.height=2.5}
 b <- qplot(result@result[ "Factor_3", ], metadata_final$age) +theme_bw(base_size = 14) + theme(panel.grid = element_blank()) + xlab("Factor 3") + ylab("Age") + scale_x_continuous(limits = c(2.8,4.5), oob=scales::squish)
 print(b)
 ```
 
-## Construct a GRP based ageing clock (Figure 3C)
+## Construct a GRP based ageing clock (Figure S8C)
 
 First, run 10-fold CV with the factors to predict age
 
@@ -169,7 +169,7 @@ for (i in 1:10) {
 ```
 
 
-## General machine learning from the transcriptome (Figure 3C)
+## General machine learning from the transcriptome (Figure S8C)
 
 Besides computing p-values, the `associate` function can also run and compare several black box machine learning strategies to predict the outcome/feature of interest from the transcriptome, beyond GRPs. It runs principal component regression, LASSO regression and differential expression testing followed by LASSO or linear regression on top DE features. ML is performed inside a 10-fold cross-validation loop. The best GRP is selected independently in each cross validation loop. The function can also compare GRPs to further, prespecified predictors (e.g. gene signatures from literature); see the remaining vignettes and the function documentation for these parameters, and documentation of the return value.
 

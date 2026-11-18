@@ -23,13 +23,13 @@ associate_binary_outcome(
 
 \item{metadata}{A data frame with rownames corresponding to column names of \code{decomp} that contains the outcome of interest and any other predictors that should be tested}
 
-\item{outcome.name}{Column name from \code{metadata} that contains the outcome of interest}
+\item{outcome.name}{Column name from \code{metadata} that contains the (logical) outcome of interest. Samples with a missing outcome are removed with a warning.}
 
 \item{other.predictors}{Names of any other columns in \code{metadata} that may serve as 0-shot predictors for the outcome. One or more predictors may be supplied. The joint LASSO model uses complete cases for these predictors and leaves predictions missing for held-out samples with missing scores.}
 
-\item{arbitrary.models}{Arbitrary linear regression models, based on columns of \code{metadata}, that should also be included in the comparison}
+\item{arbitrary.models}{Arbitrary logistic regression models, based on columns of \code{metadata}, that should also be included in the comparison. A character vector of formula right-hand sides (e.g. \code{c(age_sex = "age + sex")}); the names are used as model names in the output.}
 
-\item{genelists}{List of character vectors of gene names. If \code{run.ML=TRUE}, LASSO regression using these genes as input will be performed and compared to the other models.}
+\item{genelists}{Named list of character vectors of gene names. If \code{run.ML=TRUE}, LASSO regression using these genes (those present in the Seurat object of \code{decomp}) as input will be performed and compared to the other models. The list names are used as model names in the output.}
 
 \item{run.ML}{Whether to run machine-learning models.}
 
@@ -42,20 +42,38 @@ associate_binary_outcome(
 \item{ROCs}{Whether full ROC curves should also be returned. AUC and auPRC summaries are returned either way when run.ML=TRUE.}
 }
 \value{
-A list with entries \code{p.values} and, if \code{run.ML} is set, \code{aucs}, their standard deviation across replicates, and info on the different folds
-The additional entries \code{auprcs} and \code{auprcs.sd} contain mean areas under the precision-recall curve and their standard deviations across CV replicates, with the same model names and order as \code{aucs}. Existing entries retain their positions. auPRC is computed as average precision (the stepwise integral, grouping tied scores), with TRUE/1 as the positive class and higher predicted probabilities indicating that class. Missing predictions are omitted per model; estimates are NA when either class is absent.
+A list. If \code{run.ML = FALSE}, it contains only \code{p.values}. Otherwise, it contains the following entries:
+\describe{
+\item{\code{p.values}}{Data frame with one row per tested predictor (all GRPs, followed by those \code{other.predictors} found in \code{metadata}) and columns \code{factor_id} (factor), \code{p_outcome} (Wilcoxon p-value, not corrected for multiple testing) and \code{sign_outcome} (sign of the estimated location shift; positive means higher values in samples with outcome TRUE).}
+\item{\code{aucs}}{Named numeric vector with the area under the ROC curve of the out-of-fold predictions of each model, averaged across replicates. Names: \code{AUC.best.factor}, \code{AUC.best.other}, \code{AUC.logit.other.predictors}, \code{AUC.lasso.other.predictors}, \code{AUC.logit.factors}, \code{AUC.lasso.factors}, \code{AUC.logit.de}, \code{AUC.lasso.de}, \code{AUC.logit.pcr}, \code{AUC.lasso.pcr}, followed by one entry per element of \code{genelists} and of \code{arbitrary.models}. Models that could not be run are \code{NA}.}
+\item{\code{aucs.sd}}{Standard deviation of the AUCs across replicates, same structure as \code{aucs}.}
+\item{\code{best.factor}}{Table counting how often each GRP was selected as the best single GRP, across all CV folds and replicates.}
+\item{\code{best.other}}{The same for \code{other.predictors} (empty if none were supplied).}
+\item{\code{rocs}}{Only if \code{ROCs = TRUE}: list with one element per replicate, each a named list of \code{\link[pROC]{roc}} objects (one per model, named as in \code{aucs}; \code{NA} for models that could not be evaluated).}
+\item{\code{pairwise.wilcox.tests}}{Object of class \code{pairwise.htest}: unadjusted p-values of paired Wilcoxon signed rank tests comparing the AUCs of all pairs of models across replicates. Needs several \code{replicates} to be informative.}
+\item{\code{stored_samples}}{Numeric vector with the AUC of \code{AUC.best.factor} in each replicate.}
+\item{\code{auprcs}, \code{auprcs.sd}}{Mean area under the precision-recall curve and its standard deviation across CV replicates, with the same model names and order as \code{aucs} (names still start with \code{AUC.}). auPRC is computed as average precision (the stepwise integral, grouping tied scores), with TRUE/1 as the positive class and higher predicted probabilities indicating that class. Missing predictions are omitted per model; estimates are NA when either class is absent.}
+}
+CV replicates that fail are dropped with a warning; an error is raised if all fail.
 }
 \description{
 This function takes a decomposition object and a metadata frame with a binary (TRUE/FALSE) outcome and, if available, other predictors. It will then a) compute statistical associations between
 all predictors and the outcome and b) compare the performance of all predictors to that of various supervised machine learning strategies (see details)
 }
 \details{
-If \code{run.ML} is set, the function will set up a 10 fold cross validation scheme (or leave one out CV if <50 observations). On the train set, it will perform the following:
+The association of each GRP (and each of the \code{other.predictors}) with the outcome is tested with a Wilcoxon rank sum test between samples with outcome TRUE and FALSE.
+
+If \code{run.ML} is set, the function will set up a 10 fold cross validation scheme (or leave one out CV if <=50 observations). On the train set, it will perform the following:
 \itemize{
-\item{Perform principal component regression on 18 PCs computed on highly variable genes from the underlying Seurat object}
-\item{Perform LASSO regularized principal component regression on 50 PCs computed on highly variable genes from the underlying Seurat object}
-\item{Perform DE testing between samples from the highest and lowest quartile of the outcome, and perform LASSO or linear regression on the top DE features}
-\item{Perform LASSO and linear regression on the 18 GRPs from the decomposition}
-\item{If \code{genelists} are provided, perform LASSO on the genes from the gene lists}
+\item On each train set, select the GRP with the lowest p-value in a univariate logistic regression and evaluate its predictive power on the test set.
+\item If \code{other.predictors} are provided, select the most predictive of these in the same way and evaluate its predictive power on the test set.
+\item Perform principal component regression on 18 PCs computed on highly variable genes from the underlying Seurat object
+\item Perform LASSO regularized principal component regression on up to 30 PCs computed on highly variable genes from the underlying Seurat object
+\item Perform DE testing between samples from the two outcome classes, and perform LASSO (top 50 DE genes) or logistic regression (top 20 DE genes) on the top DE features
+\item Perform LASSO and logistic regression on all GRPs from the decomposition
+\item If \code{other.predictors} are provided, perform LASSO and logistic regression on all available precomputed predictors
+\item If \code{genelists} are provided, perform LASSO on the genes from the gene lists
+\item If \code{arbitrary.models} are provided, fit these logistic regression models
 }
+Principal components are only available if \code{decomp} was computed on more than 50 samples (see \code{\link{decompose}}).
 }

@@ -3,7 +3,9 @@
 #' Returns the factor/program names stored on a \code{\link{decomposition}} object.
 #' This is primarily useful for downstream code that needs to preserve the factor
 #' order used during decomposition, including custom loading matrices supplied to
-#' \code{\link{decompose}}.
+#' \code{\link{decompose}}. If no names are stored in the object, the row names
+#' of the \code{result} slot (excluding the intercept) are used, and failing that
+#' the column names of \code{hsc19_loadings}.
 #'
 #' @param decomp Object of class \code{\link{decomposition}}, typically returned by \code{\link{decompose}}.
 #'
@@ -29,26 +31,40 @@ get_factor_columns <- function(decomp) {
 #'
 #'@param decomp Object of class \code{\link{decomposition}}, output from \code{\link{decompose}}
 #'@param metadata A data frame with rownames corresponding to column names of \code{decomp} that contains the outcome of interest and any other predictors that should be tested
-#'@param outcome.name Column name from \code{metadata} that contains the outcome of interest
+#'@param outcome.name Column name from \code{metadata} that contains the outcome of interest. Samples with a missing outcome are removed with a warning.
 #'@param other.predictors Names of any other columns in \code{metadata} that may serve as 0-shot predictors for the outcome. See details for how these predictors are treated.
 #'@param run.ML Whether to run machine-learning models.
-#'@param genelists List of character vectors of gene names. If \code{run.ML=TRUE}, LASSO regression using these genes as input will be performed and compared to the other models.
+#'@param genelists Named list of character vectors of gene names. If \code{run.ML=TRUE}, LASSO regression using these genes as input will be performed and compared to the other models. The list names are used as model names in the output.
 #'@param replicates Number of times to repeat CV calculation with different train-test splits. Only used if \code{run.ML=TRUE}
 #'@param cores Number of cores to use (if replicates > 1)
-#'@param use.s Regularization to use for LASSO, one of \code{lambda.min} and \code{lambda.1se}
+#'@param use.s Regularization to use for LASSO, one of \code{lambda.min} and \code{lambda.1se}.
 #'
-#'@details	If \code{run.ML} is set, the function will set up a 10 fold cross validation scheme (or leave one out CV if <50 observations). On the train set, it will perform the following:
+#'@details	The association of each GRP (and each of the \code{other.predictors}) with the outcome is tested with a Pearson correlation test.
+#'
+#'If \code{run.ML} is set, the function will set up a 10 fold cross validation scheme (or leave one out CV if <=50 observations). On the train set, it will perform the following:
 #'\itemize{
-#'\item{On each train set, select the most predictive GRP and evaluate its predictive power on the test set.}
-#'\item{If \code{other.predictors} are provided, select the most predictive of these and evaluate its predictive power on the test set.}
-#'\item{Perform principal component regression on 18 PCs computed on highly variable genes from the underlying Seurat object}
-#'\item{Perform LASSO regularized principal component regression on 50 PCs computed on highly variable genes from the underlying Seurat object}
-#'\item{Perform DE testing between samples from the highest and lowest quartile of the outcome, and perform LASSO or linear regression on the top DE features}
-#'\item{Perform LASSO and linear regression on the 18 GRPs from the decomposition}
-#'\item{If \code{genelists} are provided, perform LASSO on the genes from the gene lists}
+#'\item On each train set, select the most predictive GRP (lowest correlation p-value) and evaluate its predictive power on the test set.
+#'\item If \code{other.predictors} are provided, select the most predictive of these and evaluate its predictive power on the test set.
+#'\item If \code{other.predictors} are provided, perform linear regression and LASSO on all of them jointly
+#'\item Perform principal component regression on 18 PCs computed on highly variable genes from the underlying Seurat object
+#'\item Perform LASSO regularized principal component regression on up to 30 PCs computed on highly variable genes from the underlying Seurat object
+#'\item Perform DE testing between samples from the highest and lowest quartile of the outcome, and perform LASSO (top 50 DE genes) or linear regression (top 20 DE genes) on the top DE features
+#'\item Perform LASSO and linear regression on all GRPs from the decomposition
+#'\item If \code{genelists} are provided, perform LASSO on the genes from the gene lists
 #'}
+#'Predictive performance is quantified as the squared Pearson correlation between out-of-fold predictions and the observed outcome. Principal components are only available if \code{decomp} was computed on more than 50 samples (see \code{\link{decompose}}).
 #'
-#'@return A list with entries \code{p.values} and, if \code{run.ML} is set, \code{r.squares}, their standard deviation across replicates, and info on the different folds
+#'@return A list. If \code{run.ML = FALSE}, it contains only \code{p.values}. Otherwise, it contains the following entries:
+#'\describe{
+#'\item{\code{p.values}}{Data frame with one row per tested predictor (all GRPs, followed by those \code{other.predictors} found in \code{metadata}) and columns \code{factor_id} (factor), \code{p_outcome} (p-value of the correlation test, not corrected for multiple testing) and \code{sign_outcome} (sign of the correlation).}
+#'\item{\code{r.squares}}{Named numeric vector with the cross-validated R-squared of each model, averaged across replicates. Names: \code{R2.best.factor}, \code{R2.best.other}, \code{R2.lm.factors}, \code{R2.lasso.factors}, \code{R2.lm.other.predictors}, \code{R2.lasso.other.predictors}, \code{R2.lm.de}, \code{R2.lasso.de}, \code{R2.lm.pcr}, \code{R2.lasso.pcr}, followed by one entry per element of \code{genelists}. Models that could not be run are \code{NA}.}
+#'\item{\code{r.squares.sd}}{Standard deviation of the R-squared values across replicates, same structure as \code{r.squares}.}
+#'\item{\code{best.factor}}{Table counting how often each GRP was selected as the best single GRP, across all CV folds and replicates.}
+#'\item{\code{best.other}}{The same for \code{other.predictors} (empty if none were supplied).}
+#'\item{\code{pairwise.wilcox.tests}}{Object of class \code{pairwise.htest}: unadjusted p-values of paired Wilcoxon signed rank tests comparing the R-squared of all pairs of models across replicates. Needs several \code{replicates} to be informative.}
+#'\item{\code{stored_samples}}{Numeric vector with the R-squared of \code{R2.best.factor} in each replicate.}
+#'}
+#'CV replicates that fail are dropped with a warning; an error is raised if all fail.
 #'@export
 associate_numeric_outcome<- function(decomp, metadata, outcome.name, other.predictors=NULL, run.ML=T, genelists = NULL,  cores = 6, replicates = 3, use.s = "lambda.min") {
 
@@ -114,28 +130,45 @@ associate_numeric_outcome<- function(decomp, metadata, outcome.name, other.predi
 #'
 #'@param decomp Object of class \code{\link{decomposition}}, output from \code{\link{decompose}}
 #'@param metadata A data frame with rownames corresponding to column names of \code{decomp} that contains the outcome of interest and any other predictors that should be tested
-#'@param outcome.name Column name from \code{metadata} that contains the outcome of interest
+#'@param outcome.name Column name from \code{metadata} that contains the (logical) outcome of interest. Samples with a missing outcome are removed with a warning.
 #'@param other.predictors Names of any other columns in \code{metadata} that may serve as 0-shot predictors for the outcome. One or more predictors may be supplied. The joint LASSO model uses complete cases for these predictors and leaves predictions missing for held-out samples with missing scores.
 #'@param run.ML Whether to run machine-learning models.
-#'@param arbitrary.models Arbitrary linear regression models, based on columns of \code{metadata}, that should also be included in the comparison
-#'@param genelists List of character vectors of gene names. If \code{run.ML=TRUE}, LASSO regression using these genes as input will be performed and compared to the other models.
+#'@param arbitrary.models Arbitrary logistic regression models, based on columns of \code{metadata}, that should also be included in the comparison. A character vector of formula right-hand sides (e.g. \code{c(age_sex = "age + sex")}); the names are used as model names in the output.
+#'@param genelists Named list of character vectors of gene names. If \code{run.ML=TRUE}, LASSO regression using these genes (those present in the Seurat object of \code{decomp}) as input will be performed and compared to the other models. The list names are used as model names in the output.
 #'@param replicates Number of times to repeat CV calculation with different train-test splits. Only used if \code{run.ML=TRUE}
 #'@param cores Number of cores to use (if replicates > 1)
 #'@param use.s Regularization to use for LASSO, one of \code{lambda.min} and \code{lambda.1se}
 #'@param ROCs Whether full ROC curves should also be returned. AUC and auPRC summaries are returned either way when run.ML=TRUE.
 #'
-#'@details	If \code{run.ML} is set, the function will set up a 10 fold cross validation scheme (or leave one out CV if <50 observations). On the train set, it will perform the following:
-#'\itemize{
-#'\item{Perform principal component regression on 18 PCs computed on highly variable genes from the underlying Seurat object}
-#'\item{Perform LASSO regularized principal component regression on 50 PCs computed on highly variable genes from the underlying Seurat object}
-#'\item{Perform DE testing between samples from the highest and lowest quartile of the outcome, and perform LASSO or linear regression on the top DE features}
-#'\item{Perform LASSO and linear regression on the 18 GRPs from the decomposition}
-#'\item{If \code{other.predictors} are provided, perform LASSO and regression on all available precomputed predictors}
-#'\item{If \code{genelists} are provided, perform LASSO on the genes from the gene lists}
-#'}
+#'@details	The association of each GRP (and each of the \code{other.predictors}) with the outcome is tested with a Wilcoxon rank sum test between samples with outcome TRUE and FALSE.
 #'
-#'@return A list with entries \code{p.values} and, if \code{run.ML} is set, \code{aucs}, their standard deviation across replicates, and info on the different folds
-#'The additional entries \code{auprcs} and \code{auprcs.sd} contain mean areas under the precision-recall curve and their standard deviations across CV replicates, with the same model names and order as \code{aucs}. Existing entries retain their positions. auPRC is computed as average precision (the stepwise integral, grouping tied scores), with TRUE/1 as the positive class and higher predicted probabilities indicating that class. Missing predictions are omitted per model; estimates are NA when either class is absent.
+#'If \code{run.ML} is set, the function will set up a 10 fold cross validation scheme (or leave one out CV if <=50 observations). On the train set, it will perform the following:
+#'\itemize{
+#'\item On each train set, select the GRP with the lowest p-value in a univariate logistic regression and evaluate its predictive power on the test set.
+#'\item If \code{other.predictors} are provided, select the most predictive of these in the same way and evaluate its predictive power on the test set.
+#'\item Perform principal component regression on 18 PCs computed on highly variable genes from the underlying Seurat object
+#'\item Perform LASSO regularized principal component regression on up to 30 PCs computed on highly variable genes from the underlying Seurat object
+#'\item Perform DE testing between samples from the two outcome classes, and perform LASSO (top 50 DE genes) or logistic regression (top 20 DE genes) on the top DE features
+#'\item Perform LASSO and logistic regression on all GRPs from the decomposition
+#'\item If \code{other.predictors} are provided, perform LASSO and logistic regression on all available precomputed predictors
+#'\item If \code{genelists} are provided, perform LASSO on the genes from the gene lists
+#'\item If \code{arbitrary.models} are provided, fit these logistic regression models
+#'}
+#'Principal components are only available if \code{decomp} was computed on more than 50 samples (see \code{\link{decompose}}).
+#'
+#'@return A list. If \code{run.ML = FALSE}, it contains only \code{p.values}. Otherwise, it contains the following entries:
+#'\describe{
+#'\item{\code{p.values}}{Data frame with one row per tested predictor (all GRPs, followed by those \code{other.predictors} found in \code{metadata}) and columns \code{factor_id} (factor), \code{p_outcome} (Wilcoxon p-value, not corrected for multiple testing) and \code{sign_outcome} (sign of the estimated location shift; positive means higher values in samples with outcome TRUE).}
+#'\item{\code{aucs}}{Named numeric vector with the area under the ROC curve of the out-of-fold predictions of each model, averaged across replicates. Names: \code{AUC.best.factor}, \code{AUC.best.other}, \code{AUC.logit.other.predictors}, \code{AUC.lasso.other.predictors}, \code{AUC.logit.factors}, \code{AUC.lasso.factors}, \code{AUC.logit.de}, \code{AUC.lasso.de}, \code{AUC.logit.pcr}, \code{AUC.lasso.pcr}, followed by one entry per element of \code{genelists} and of \code{arbitrary.models}. Models that could not be run are \code{NA}.}
+#'\item{\code{aucs.sd}}{Standard deviation of the AUCs across replicates, same structure as \code{aucs}.}
+#'\item{\code{best.factor}}{Table counting how often each GRP was selected as the best single GRP, across all CV folds and replicates.}
+#'\item{\code{best.other}}{The same for \code{other.predictors} (empty if none were supplied).}
+#'\item{\code{rocs}}{Only if \code{ROCs = TRUE}: list with one element per replicate, each a named list of \code{\link[pROC]{roc}} objects (one per model, named as in \code{aucs}; \code{NA} for models that could not be evaluated).}
+#'\item{\code{pairwise.wilcox.tests}}{Object of class \code{pairwise.htest}: unadjusted p-values of paired Wilcoxon signed rank tests comparing the AUCs of all pairs of models across replicates. Needs several \code{replicates} to be informative.}
+#'\item{\code{stored_samples}}{Numeric vector with the AUC of \code{AUC.best.factor} in each replicate.}
+#'\item{\code{auprcs}, \code{auprcs.sd}}{Mean area under the precision-recall curve and its standard deviation across CV replicates, with the same model names and order as \code{aucs} (names still start with \code{AUC.}). auPRC is computed as average precision (the stepwise integral, grouping tied scores), with TRUE/1 as the positive class and higher predicted probabilities indicating that class. Missing predictions are omitted per model; estimates are NA when either class is absent.}
+#'}
+#'CV replicates that fail are dropped with a warning; an error is raised if all fail.
 #'@export
 associate_binary_outcome<- function(decomp, metadata, outcome.name, other.predictors=NULL, arbitrary.models = NULL, genelists = NULL, run.ML=T, cores = 6, replicates = 3, use.s = "lambda.min", ROCs = F) {
 
@@ -206,32 +239,48 @@ associate_binary_outcome<- function(decomp, metadata, outcome.name, other.predic
 
 #'Associate GRPs with a survival outcome
 #'
-#'This function takes a decomposition object and a metadata frame with a binary (TRUE/FALSE) outcome and, if available, other predictors. It will then a) compute statistical associations between
+#'This function takes a decomposition object and a metadata frame with a survival outcome (follow-up time and event status) and, if available, other predictors. It will then a) compute statistical associations between
 #'all predictors and the outcome and b) compare the performance of all predictors to that of various supervised machine learning strategies (see details)
 #'
 #'@param decomp Object of class \code{\link{decomposition}}, output from \code{\link{decompose}}
 #'@param metadata A data frame with rownames corresponding to column names of \code{decomp} that contains the outcome of interest and any other predictors that should be tested
 #'@param outcome.status.name Column name from \code{metadata} that contains the survival outcome (0 = censored, 1 = event)
-#'@param outcome.time.name Column name from \code{metadata} that contains the associated follow-up time
+#'@param outcome.time.name Column name from \code{metadata} that contains the associated follow-up time. Samples with missing time or status are removed with a warning.
 #'@param other.predictors Names of any other columns in \code{metadata} that may serve as 0-shot predictors for the outcome
-#'@param arbitrary.models Arbitrary linear regression models, based on columns of \code{metadata}, that should also be included in the comparison.
+#'@param arbitrary.models Arbitrary Cox regression models, based on columns of \code{metadata}, that should also be included in the comparison. A character vector of formula right-hand sides (e.g. \code{c(age_sex = "age + sex")}); the names are used as model names in the output.
 #'@param run.ML Whether to run machine-learning models.
-#'@param genelists List of character vectors of gene names. If \code{run.ML=TRUE}, LASSO regression using these genes as input will be performed and compared to the other models.
+#'@param genelists Named list of character vectors of gene names. If \code{run.ML=TRUE}, LASSO Cox regression using these genes (those present in the Seurat object of \code{decomp}) as input will be performed and compared to the other models. The list names are used as model names in the output.
 #'@param replicates Number of times to repeat CV calculation with different train-test splits. Only used if \code{run.ML=TRUE}
 #'@param cores Number of cores to use (if replicates > 1)
 #'@param use.s Regularization to use for LASSO, one of \code{lambda.min} and \code{lambda.1se}
 #'
-#'@details	If \code{run.ML} is set, the function will set up a 10 fold cross validation scheme (or leave one out CV if <50 observations). On the train set, it will perform the following:
-#'\itemize{
-#'\item{Perform principal component regression on 18 PCs computed on highly variable genes from the underlying Seurat object}
-#'\item{Perform LASSO regularized principal component regression on 50 PCs computed on highly variable genes from the underlying Seurat object}
-#'\item{Perform DE testing between samples from the highest and lowest quartile of the outcome, and perform LASSO or linear regression on the top DE features}
-#'\item{Perform LASSO and linear regression on the 18 GRPs from the decomposition}
-#'\item{If \code{other.predictors} are provided, perform LASSO and Cox regression on all available precomputed predictors}
-#'\item{If \code{genelists} are provided, perform LASSO on the genes from the gene lists}
-#'}
+#'@details	The association of each GRP (and each of the \code{other.predictors}) with survival is tested with a univariate Cox proportional hazards model (Efron ties).
 #'
-#'@return A list with entries \code{p.values} and, if \code{run.ML} is set, \code{aucs}, their standard deviation across replicates, and info on the different folds
+#'If \code{run.ML} is set, the function will set up a 10 fold cross validation scheme (or leave one out CV if <=50 observations). On the train set, it will perform the following:
+#'\itemize{
+#'\item On each train set, select the GRP with the lowest univariate Cox p-value and evaluate its predictive power on the test set.
+#'\item If \code{other.predictors} are provided, select the most predictive of these in the same way and evaluate its predictive power on the test set.
+#'\item Perform principal component regression (Cox) on 18 PCs computed on highly variable genes from the underlying Seurat object
+#'\item Perform LASSO regularized Cox principal component regression on up to 30 PCs computed on highly variable genes from the underlying Seurat object
+#'\item Among the events in the train set (at least 20 are required), perform DE testing between samples from the longest and shortest quartile of follow-up times, and perform LASSO Cox (top 50 DE genes) or Cox regression (top 20 DE genes) on the top DE features
+#'\item Perform LASSO and Cox regression on all GRPs from the decomposition
+#'\item If \code{other.predictors} are provided, perform LASSO and Cox regression on all available precomputed predictors
+#'\item If \code{genelists} are provided, perform LASSO Cox on the genes from the gene lists
+#'\item If \code{arbitrary.models} are provided, fit these Cox models
+#'}
+#'Principal components are only available if \code{decomp} was computed on more than 50 samples (see \code{\link{decompose}}).
+#'
+#'@return A list. If \code{run.ML = FALSE}, it contains only \code{p.values}. Otherwise, it contains the following entries:
+#'\describe{
+#'\item{\code{p.values}}{Data frame with one row per tested predictor (all GRPs, followed by those \code{other.predictors} found in \code{metadata}) and columns \code{factor_id} (factor), \code{p_outcome} (Wald p-value of the Cox model, not corrected for multiple testing) and \code{sign_outcome} (sign of the Cox coefficient multiplied by -1; positive means higher values are associated with better survival).}
+#'\item{\code{c.index}}{Named numeric vector with Harrell's C-index of the out-of-fold risk scores of each model, averaged across replicates. Each C-index is computed as the larger of the C-index of the score and of its negative, so values are >= 0.5 and do not indicate the direction of effect. Names: \code{C.best.factor}, \code{C.best.other}, \code{C.cox.other.predictors}, \code{C.lasso.other.predictors}, \code{C.cox.factors}, \code{C.lasso.factors}, \code{C.cox.de}, \code{C.lasso.de}, \code{C.cox.pcr}, \code{C.lasso.pcr}, followed by one entry per element of \code{genelists} and of \code{arbitrary.models}. Models that could not be run are \code{NA}.}
+#'\item{\code{c.index.sd}}{Standard deviation of the C-indices across replicates, same structure as \code{c.index}.}
+#'\item{\code{best.factor}}{Table counting how often each GRP was selected as the best single GRP, across all CV folds and replicates.}
+#'\item{\code{best.other}}{The same for \code{other.predictors} (empty if none were supplied).}
+#'\item{\code{pairwise.wilcox.tests}}{Object of class \code{pairwise.htest}: unadjusted p-values of paired Wilcoxon signed rank tests comparing the C-indices of all pairs of models across replicates. Needs several \code{replicates} to be informative.}
+#'\item{\code{stored_samples}}{Numeric vector with the C-index of \code{C.best.factor} in each replicate.}
+#'}
+#'CV replicates that fail are dropped with a warning; an error is raised if all fail.
 #'@export
 associate_survival_outcome <- function(
     decomp,
@@ -460,7 +509,7 @@ get_cv <- function(decomp, modelf, outcome.name, other.predictors, genelists, us
     Idents(forde) <- ifelse(forde$group, "top", "bottom")
     #browser()
 
-    de <- Seurat::FindMarkers(forde, ident.1 = "top", min.pct = 0.2, logfc.threshold = 0.5) #there was a typo in this function, it was min.pcr (so ignored)
+    de <- Seurat::FindMarkers(forde, ident.1 = "top", min.pct = 0.2, logfc.threshold = 0.5)
     de <- de[order(de$p_val),]
     usegenes <- rownames(de)[1:50]
 
@@ -735,7 +784,7 @@ get_cv_binary <- function(decomp, modelf, outcome.name, other.predictors, geneli
       forde <- subset(decomp@s, cells = c(top, bottom))
       forde$group <- colnames(forde) %in% top
       Idents(forde) <- ifelse(forde$group, "top", "bottom")
-      de <- Seurat::FindMarkers(forde, ident.1 = "top", min.pcr = 0.2, logfc.threshold = 0.5)
+      de <- Seurat::FindMarkers(forde, ident.1 = "top", min.pct = 0.2, logfc.threshold = 0.5)
       de <- de[order(de$p_val), , drop = FALSE]
       usegenes <- head(rownames(de), 50)
 
@@ -1031,7 +1080,7 @@ get_cv_surv <- function(decomp, modelf, outcome.status.name, outcome.time.name,
         forde$group <- colnames(forde) %in% top
         Seurat::Idents(forde) <- ifelse(forde$group, "top", "bottom")
 
-        de <- Seurat::FindMarkers(forde, ident.1 = "top", min.pcr = 0.2, logfc.threshold = 0.5)
+        de <- Seurat::FindMarkers(forde, ident.1 = "top", min.pct = 0.2, logfc.threshold = 0.5)
         de <- de[order(de$p_val), , drop = FALSE]
         usegenes <- head(rownames(de), 50)
 

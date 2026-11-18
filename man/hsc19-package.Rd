@@ -13,6 +13,7 @@ Decomposes transcriptome data into 19 gene regulatory programs defined by Pertur
 
 Authors:
 \itemize{
+  \item Lars Velten \email{lars.velten@crg.eu}
   \item Joseph Bowness \email{joseph.bowness@crg.eu}
 }
 

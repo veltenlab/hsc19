@@ -9,7 +9,7 @@
 \arguments{
 \item{x}{A \code{\link{decomposition}} object.}
 
-\item{value}{A character vector of new column names.}
+\item{value}{A character vector of new sample/cell names. Only the \code{result} slot is renamed; the Seurat object in slot \code{s} keeps its original names.}
 }
 \value{
 The updated \code{\link{decomposition}} object.

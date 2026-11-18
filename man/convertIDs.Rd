@@ -13,12 +13,12 @@ convertIDs(x, rid)
 \S4method{convertIDs}{character,character}(x, rid)
 }
 \arguments{
-\item{x}{A matrix with gene symbols as row names, or a character vector gene symbols.}
+\item{x}{A matrix with (mouse) gene symbols as row names, or a character vector of (mouse) gene symbols.}
 
-\item{rid}{One of hsy (human gene symbol), hens or mens (ensembl IDs)}
+\item{rid}{One of hsy (human gene symbol, obtained by upper-casing), hens (human ENSEMBL IDs; symbols are upper-cased and mapped via org.Hs.eg.db) or mens (mouse ENSEMBL IDs, mapped via org.Mm.eg.db). Any other value (e.g. msy) returns \code{x} unchanged.}
 }
 \value{
-The matrix with ambiguous entries removed, or the character vector
+For matrices, the matrix with converted row names; for hens and mens, genes that cannot be mapped or map ambiguously to more than one ENSEMBL ID are removed. For character vectors, the converted IDs; for hens and mens, unmapped symbols are dropped (so the result can differ in length and order from \code{x}) and symbols with several ENSEMBL IDs yield several entries.
 }
 \description{
 Convert mouse gene symbols to different formats

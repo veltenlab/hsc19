@@ -1,9 +1,11 @@
 #'Show genes associated with a certain GRP
 #'
+#'Loadings are multiplied with the \code{multiply_with} sign in \code{factor_annotation} for display, so that the orientation matches the annotated program label; a message is printed if this flipped the sign.
+#'
 #'@param factor Name of a GRP, e.g. \code{"Factor_7"}
-#'@param top Whether to show genes with the highest or lowest loadings
+#'@param top If \code{TRUE}, show genes with positive loadings, otherwise genes with negative loadings (after the sign adjustment described above)
 #'@param values Whether to return numerical factor loadings
-#'@return Character vector of gene symbols, sorted by absolute value of the loading, or named numeric vector
+#'@return Character vector of (mouse) gene symbols, sorted by absolute value of the loading, or, if \code{values = TRUE}, the corresponding named numeric vector of loadings
 #'@export
 get_genes <- function(factor, top = T, values = F) {
 
@@ -23,10 +25,12 @@ get_genes <- function(factor, top = T, values = F) {
 
 #'Show perturbations regulating a certain GRP
 #'
+#'Lists the CRISPRi perturbations (guides) with a non-zero effect on the GRP in the Perturb-Seq data (\code{hsc19_perturbation_beta}). Effects are multiplied with the \code{multiply_with} sign in \code{factor_annotation} for display; a message is printed if this flipped the sign.
+#'
 #'@param factor Name of a GRP, e.g. \code{"Factor_7"}
-#'@param top Whether to show positive or negative regulators
-#'@param values Whether to return numerical factor loadings
-#'@return Character vector of gene symbols, sorted by absolute value of the loading, or named numeric vector
+#'@param top If \code{TRUE}, show perturbations with a positive effect on the GRP, otherwise those with a negative effect
+#'@param values Whether to return numerical effect sizes
+#'@return Character vector of guide IDs (e.g. \code{"Etv6-CRISPRi-sgRNA-1"}), sorted by absolute value of the effect, or, if \code{values = TRUE}, the corresponding named numeric vector of effects
 #'@export
 get_pert <- function(factor, top = T, values = F) {
 a <- hsc19_perturbation_beta[,factor] * factor_annotation$multiply_with[factor_annotation$factor_id == factor]
@@ -44,8 +48,10 @@ if (values) {
 
 #'Plot perturbations regulating a certain GRP
 #'
+#'Shows, for each perturbed gene, the mean effect of its gRNAs on the GRP (multiplied with the \code{multiply_with} sign in \code{factor_annotation}), coloured by the number of gRNAs with a significant (non-zero) effect.
+#'
 #'@param factor Name of a GRP, e.g. \code{"Factor_7"}
-#'@param min.sig.gRNA Only include perturbations with this many significant gRNAs
+#'@param min.sig.gRNA Only include perturbations (genes) with at least this many significant gRNAs
 #'@return ggplot2 object
 #'@export
 plot_pert <- function(factor, min.sig.gRNA = 2) {

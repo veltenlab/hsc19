@@ -1,10 +1,12 @@
-#'Decompose RNA-seq data into 18 gene regulatory programs
+#'Decompose RNA-seq data into 19 gene regulatory programs
 #'
 #'Ideally run this function on RNA-seq data of HSCs, e.g. bulk RNA-seq data of CD34+ cells (human) or LSK cells (mouse), or single cell data subset to HSCs. This function can run on bulk, pseudobulk or single cell RNA-seq.
+#'
+#'@details The species and gene ID format of the data (human or mouse; symbols or ENSEMBL IDs) is detected from the row names, and the row names of \code{loadings} (mouse gene symbols for \code{hsc19_loadings}) are converted accordingly with \code{\link{convertIDs}}. For each sample, the log-normalized expression of the genes shared between data and loadings is regressed on the loadings with a linear model; the coefficients are the inferred program activities. If \code{counts} is provided, a Seurat object is created and normalized internally. 
 #'@param counts Count matrix, with gene IDs as row names and sample identifiers as column names. Supported gene name formats are mouse or human gene symbols (preferred), or ENSEMBL (ENSG/ENSMUSG) IDs.
-#'@param s A seurat object, with \code{NormalizeData} and \code{FindVariableFeatures} run. One of \code{counts} or \code{s} needs to be provided. If \code{counts} is provided, \code{s} is ignored.
-#'@param loadings Loading matrix with genes in rows and factors/programs in columns. Defaults to \code{hsc19_loadings}.
-#'@return Returns an object of class \code{\link{decomposition}}
+#'@param s A seurat object, with \code{NormalizeData} and \code{FindVariableFeatures} run. One of \code{counts} or \code{s} needs to be provided. If \code{counts} is provided, \code{s} is ignored. The normalized data of the default assay are used.
+#'@param loadings Loading matrix with genes (mouse gene symbols, as in \code{hsc19_loadings}) in rows and factors/programs in columns. Row and column names must be present and unique. Defaults to \code{hsc19_loadings}.
+#'@return Returns an object of class \code{\link{decomposition}}, with the inferred activity of each program in each sample in the \code{result} slot.
 #'@export
 decompose <- function(counts = NULL, s = NULL, loadings = hsc19_loadings) {
   if (!is.null(counts)) {
@@ -32,7 +34,7 @@ decompose <- function(counts = NULL, s = NULL, loadings = hsc19_loadings) {
   }
 
   #determine format of rownames
-  if (mean(grepl("^ENSG", rownames(s)) > 0.9)) {
+  if (mean(grepl("^ENSG", rownames(s))) > 0.9) {
     rid <- "hens"
   } else if (mean(grepl("^ENSMUSG", rownames(s))) > 0.9) {
     rid <- "mens"
@@ -86,10 +88,10 @@ decompose <- function(counts = NULL, s = NULL, loadings = hsc19_loadings) {
 #'
 #' Convert mouse gene symbols to different formats
 #'
-#' @param x A matrix with gene symbols as row names, or a character vector gene symbols.
-#' @param rid One of hsy (human gene symbol), hens or mens (ensembl IDs)
+#' @param x A matrix with (mouse) gene symbols as row names, or a character vector of (mouse) gene symbols.
+#' @param rid One of hsy (human gene symbol, obtained by upper-casing), hens (human ENSEMBL IDs; symbols are upper-cased and mapped via org.Hs.eg.db) or mens (mouse ENSEMBL IDs, mapped via org.Mm.eg.db). Any other value (e.g. msy) returns \code{x} unchanged.
 #'
-#' @return The matrix with ambiguous entries removed, or the character vector
+#' @return For matrices, the matrix with converted row names; for hens and mens, genes that cannot be mapped or map ambiguously to more than one ENSEMBL ID are removed. For character vectors, the converted IDs; for hens and mens, unmapped symbols are dropped (so the result can differ in length and order from \code{x}) and symbols with several ENSEMBL IDs yield several entries.
 #' @export
 setGeneric("convertIDs", function(x, rid) {
   standardGeneric("convertIDs")

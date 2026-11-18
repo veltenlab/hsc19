@@ -9,13 +9,13 @@ get_genes(factor, top = T, values = F)
 \arguments{
 \item{factor}{Name of a GRP, e.g. \code{"Factor_7"}}
 
-\item{top}{Whether to show genes with the highest or lowest loadings}
+\item{top}{If \code{TRUE}, show genes with positive loadings, otherwise genes with negative loadings (after the sign adjustment described above)}
 
 \item{values}{Whether to return numerical factor loadings}
 }
 \value{
-Character vector of gene symbols, sorted by absolute value of the loading, or named numeric vector
+Character vector of (mouse) gene symbols, sorted by absolute value of the loading, or, if \code{values = TRUE}, the corresponding named numeric vector of loadings
 }
 \description{
-Show genes associated with a certain GRP
+Loadings are multiplied with the \code{multiply_with} sign in \code{factor_annotation} for display, so that the orientation matches the annotated program label; a message is printed if this flipped the sign.
 }

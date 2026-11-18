@@ -11,15 +11,18 @@ This class stores the results of \code{\link{decompose}}
 \section{Slots}{
 
 \describe{
-\item{\code{result}}{inferred activity of the 18 GRPs per sample}
+\item{\code{result}}{Matrix with the inferred activity of the GRPs per sample: one row per program, plus a row "(Intercept)"; one column per sample}
 
 \item{\code{factor_names}}{Names of the factors/programs used for the decomposition}
 
-\item{\code{pca}}{result of running `prcomp` on the HVGs of the input data}
+\item{\code{pca}}{Seurat \code{DimReduc} object with the result of running PCA (\code{Seurat::RunPCA}, 50 PCs) on the variable features of the input data. Only populated if the data has more than 50 samples}
 
-\item{\code{pve}}{Percent variance explained}
+\item{\code{pve}}{Fraction of the gene expression variance (summed over the genes in \code{usegenes}) explained by the programs}
 
 \item{\code{s}}{Seurat object that was used to create the decomposition}
 
-\item{\code{pve_pca}}{Percent variant explained by 18 principal components}
+\item{\code{pve_pca}}{Fraction of the gene expression variance (in \code{usegenes}) explained by as many principal components as there are programs}
+
+\item{\code{usegenes}}{Genes (in the ID format of the input data) shared between the input data and the loadings, on which the decomposition was computed}
 }}
+

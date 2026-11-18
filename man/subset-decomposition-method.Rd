@@ -13,7 +13,7 @@
 and is passed to \code{cells = include} in \code{\link[Seurat:subset.Seurat]{Seurat::subset()}}.}
 }
 \value{
-A \code{\link{decomposition}} object containing only \code{include}.
+A \code{\link{decomposition}} object containing only \code{include}. The slots \code{pve}, \code{pve_pca} and \code{usegenes} are carried over unchanged and are not recomputed for the subset.
 }
 \description{
 Keep only a subset of samples/cells in a \code{\link{decomposition}}.
