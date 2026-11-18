@@ -2,7 +2,7 @@
 title: "Decomposition of clonal HSC transcriptomes (LARRY/DARLIN)"
 output: rmarkdown::html_vignette
 vignette: >
-  %\VignetteIndexEntry{Application: Clonal HSC properties (LARRY/DARLIN, Figure 3D-F)}
+  %\VignetteIndexEntry{Application: Clonal HSC properties (LARRY/DARLIN, Figure 3B-D, 3F-G)}
   %\VignetteEngine{knitr::rmarkdown}
   %\VignetteEncoding{UTF-8}
 ---
@@ -282,9 +282,9 @@ grp2output_darlin_binary <- associate_binary_outcome(result_darlin, darlin_clone
 
 ## Create figures
 
-### Figure 3D: P values
+### Figure 3B and 3F: P values
 
-```{r figure3d, fig.width=3.5, fig.height=2.5}
+```{r figure3bf, fig.width=3.5, fig.height=2.5}
 
 D <- list(larry_output = grp2output_larry_output, larry_activity = grp2output_larry_binary,
           darlin_output = grp2output_darlin_output, darlin_activity = grp2output_darlin_binary)
@@ -294,7 +294,7 @@ pvalues <- lapply(names(pvalues), function(n) { x <- pvalues[[n]]; x$phenotype <
 pvalues <- do.call(rbind, pvalues)
 pvalues$experiment <- toupper(gsub("_.+", "", pvalues$phenotype))
 pvalues$phenotype <- gsub("larry_|darlin_", "", pvalues$phenotype)
-pvalues$show_value <- with(pvalues, ifelse(p_outcome < 0.1, -log10(p_outcome), log10(0.1)))
+pvalues$show_value <- with(pvalues, ifelse(p_outcome < 0.1, -log10(p_outcome), -log10(0.1)))
 pvalues <- subset(pvalues, grepl("Factor_", factor_id))
 factor_levels <- get_factor_columns(result_larry)
 pvalues$factor_id <- factor(pvalues$factor_id, levels = factor_levels)
@@ -304,7 +304,7 @@ any_sig <- sapply(names(ylabels), function(x) any(pvalues$p_outcome[pvalues$fact
 ylabels[!any_sig] <- ""
 pvalues <- merge(pvalues, factor_annotation)
 
-fig3d <- ggplot(aes(x = factor_id, y = phenotype), data = pvalues) + 
+fig3bf <- ggplot(aes(x = factor_id, y = phenotype), data = pvalues) + 
   geom_blank() +
   geom_tile(aes(fill =show_value), data = subset(pvalues, p_outcome < 0.05 & sign_outcome * multiply_with == -1)) +
   scale_fill_gradientn(name = "p-value (neg)", colors = c("white","lightblue","blue", "blue", "darkblue"), breaks = c(-log10(0.05), -log10(0.1 / (19*4)), 5), labels = c("0.05", "", "1e-5"), limits = c(-log10(0.05), max(pvalues$show_value)), na.value = "white") +
@@ -316,29 +316,31 @@ fig3d <- ggplot(aes(x = factor_id, y = phenotype), data = pvalues) +
   theme_bw() + theme(panel.grid = element_blank(), legend.position = "bottom") + scale_size_area(guide= "none", max_size = 3) +
   scale_shape_manual(values = c("1" = 24, "-1" = 25), guide="none")
 
+print(fig3bf)
+```
+
+### Figure 3C and 3D: Box plots
+
+```{r fig3c, fig.width=1.6, fig.height=1.8}
+forplot <- cbind(clone_info, t(result_larry@result))
+
+fig3c <- qplot(x = output_binary, y = Factor_20 * factor_annotation$multiply_with[factor_annotation$factor_id == "Factor_20"], data = forplot, geom = "boxplot") + ylab("GRP20\n(ribosomes)") + scale_x_discrete("Active", labels = c("FALSE" = sprintf("No\n(n=%d)", sum(!forplot$output_binary)), "TRUE" = sprintf("Yes\n(n=%d)", sum(forplot$output_binary)))) +
+  theme_bw() + theme(panel.grid = element_blank())
+print(fig3c)
+```
+
+```{r fig3d, fig.width=2.5, fig.height=1.8}
+forplot$A_output_discrete <- infotheo::discretize(forplot$A_output, nbins = 4)$X
+fig3d <- qplot(x = as.factor(A_output_discrete), y = Factor_18 * factor_annotation$multiply_with[factor_annotation$factor_id == "Factor_18"], data = forplot, geom = "boxplot") + ylab("GRP18\n(asymmetric division)")+
+    theme_bw() + theme(panel.grid = element_blank()) + scale_x_discrete("Output (non-HSC/HSC), quartiles", labels = paste(1:4,"\n"))
 print(fig3d)
 ```
 
-### Figure 3E: Box plots
+### Figure 3G: Predictive performance
 
-```{r fig3eleft, fig.width=1.6, fig.height=1.8}
-forplot <- cbind(clone_info, t(result_larry@result))
+The "Full transcriptome (Supervised ML)" estimate is the best of the transcriptome-wide models (principal component regression, LASSO, and DE-based regression). Models built on GRPs, other predictors, or published gene lists are not eligible.
 
-fig3el <- qplot(x = output_binary, y = Factor_20 * factor_annotation$multiply_with[factor_annotation$factor_id == "Factor_20"], data = forplot, geom = "boxplot") + ylab("GRP20\n(ribosomes)") + scale_x_discrete("Active", labels = c("FALSE" = sprintf("No\n(n=%d)", sum(!forplot$output_binary)), "TRUE" = sprintf("Yes\n(n=%d)", sum(forplot$output_binary)))) +
-  theme_bw() + theme(panel.grid = element_blank())
-print(fig3el)
-```
-
-```{r fig3eright, fig.width=2.5, fig.height=1.8}
-forplot$A_output_discrete <- infotheo::discretize(forplot$A_output, nbins = 4)$X
-fig3er <- qplot(x = as.factor(A_output_discrete), y = Factor_18 * factor_annotation$multiply_with[factor_annotation$factor_id == "Factor_18"], data = forplot, geom = "boxplot") + ylab("GRP18\n(Progenitor activ.)")+
-    theme_bw() + theme(panel.grid = element_blank()) + scale_x_discrete("Output (non-HSC/HSC), quartiles", labels = paste(1:4,"\n"))
-print(fig3er)
-```
-
-### Figure 3F: Predictive performance
-
-```{r fig3f, fig.width=6, fig.height=2.8}
+```{r fig3g, fig.width=6, fig.height=2.8}
 predictive_performance <- data.frame(
   measure = do.call(c, lapply(D, function(x) names(x[[2]]))),
   auc.rqsr = do.call(c, lapply(D, "[[", 2)),
@@ -346,7 +348,11 @@ predictive_performance <- data.frame(
 predictive_performance$experiment <- ifelse(grepl("larry", rownames(predictive_performance)), "LARRY", "DARLIN")
 predictive_performance$phenotype <- gsub(".+_(\\D+)\\d+","\\1",rownames(predictive_performance))
 predictive_performance$zeroshot <- predictive_performance$measure %in% c("R2.best.factor", "R2.best.other", "AUC.best.factor", "AUC.best.other")
-predictive_performance$grouping <- with(predictive_performance, ifelse(zeroshot, measure,ifelse(measure %in% c("AUC.lasso.factors","R2.lasso.factors"), "Supervised ML", "Supervised ML")))
+# Upper bound: best transcriptome-wide ML model; models built on GRPs, other predictors or gene lists are not eligible
+ml_models <- c("R2.lm.de", "R2.lasso.de", "R2.lm.pcr", "R2.lasso.pcr",
+               "AUC.logit.de", "AUC.lasso.de", "AUC.logit.pcr", "AUC.lasso.pcr")
+predictive_performance$grouping <- with(predictive_performance, ifelse(zeroshot, measure, ifelse(measure %in% ml_models, "Supervised ML", NA)))
+predictive_performance <- subset(predictive_performance, !is.na(grouping))
 simple <- ddply(predictive_performance, c("experiment","phenotype", "grouping"), summarise, 
                 best = max(auc.rqsr), 
                 best.sd = auc.rqsr.sd[which.max(auc.rqsr)],
@@ -373,7 +379,7 @@ for_combined_plot$simplegroup <- with(for_combined_plot, factor(gsub("AUC.|R2.",
 faclabels <- c("output" = "output (R2)", "activity" = "activity (AUC)")
 collabels <- c("Supervised ML" = "Full transcriptome\n(Supervised ML)", "best.other" = "Best published\nTx signature", "best.factor" = "Best GRP")
 
-fig3f <- ggplot(aes(x = best, y = simplegroup, color = simplegroup), data=for_combined_plot) + geom_point() + 
+fig3g <- ggplot(aes(x = best, y = simplegroup, color = simplegroup), data=for_combined_plot) + geom_point() + 
   geom_errorbarh(aes(xmin= best-best.sd, xmax = best+best.sd), height=0.1) + 
   geom_text_repel(aes(label = ylabels[as.character(best.list)]), color = "black",size=3, data = subset(for_combined_plot, best.list != "Supervised ML")) + 
   facet_wrap( ~  factor(experiment, levels = c("LARRY", "DARLIN")) + faclabels[phenotype], scales="free_x", nrow=1) + 
@@ -383,14 +389,14 @@ fig3f <- ggplot(aes(x = best, y = simplegroup, color = simplegroup), data=for_co
                       name = "Predictor", labels = collabels) + 
  geom_vline(aes(xintercept = best), data=subset(for_combined_plot, grouping == "Supervised ML"), linetype = 3)
 
-print(fig3f)
+print(fig3g)
 ```
 
 ### Precision–recall performance for binary activity
 
 auPRC is computed as average precision on held-out predictions, with active
 clones as the positive class. Continuous output outcomes are excluded. As in
-Figure 3F, the best supervised model is selected by the displayed metric.
+Figure 3G, the best supervised model is selected by the displayed metric.
 
 ```{r fig3f-auprc, fig.width=6, fig.height=2.8}
 D_pr <- D[vapply(D, function(x) !is.null(x$auprcs), logical(1))]
@@ -401,7 +407,8 @@ pr_performance <- data.frame(
 pr_performance$experiment <- ifelse(grepl("larry", rownames(pr_performance)), "LARRY", "DARLIN")
 pr_performance$phenotype <- gsub(".+_(\\D+)\\d+","\\1",rownames(pr_performance))
 pr_performance$zeroshot <- pr_performance$measure %in% c("R2.best.factor", "R2.best.other", "AUC.best.factor", "AUC.best.other")
-pr_performance$grouping <- with(pr_performance, ifelse(zeroshot, measure,ifelse(measure %in% c("AUC.lasso.factors","R2.lasso.factors"), "Supervised ML", "Supervised ML")))
+pr_performance$grouping <- with(pr_performance, ifelse(zeroshot, measure, ifelse(measure %in% ml_models, "Supervised ML", NA)))
+pr_performance <- subset(pr_performance, !is.na(grouping))
 simple <- ddply(pr_performance, c("experiment","phenotype", "grouping"), summarise,
                 best = max(auprc),
                 best.sd = auprc.sd[which.max(auprc)],

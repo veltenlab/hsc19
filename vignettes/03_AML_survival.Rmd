@@ -31,7 +31,7 @@ This vignette decomposes HSPC transcriptomes from a single-cell RNA-seq atlas in
 
 ## Data preparation
 
-We used a single-cell RNA-seq dataset of n=183 AML patients, selected to represent most genetically defined (WHO) groups (Barinka et al., unpublished). This dataset had been annotated by projection on a healthy reference4, to identify the most similar healthy cell type / differentiation state for each cell. We subsetted to cells corresponding to stem and progenitor cells (i.e. up to the promyelocyte stage, and excluding cells resembling mature monocytes, and other mature myeloid, erythroid and lymphoid cells), and summed raw read counts per patient (not shown)
+We used a single-cell RNA-seq dataset of n=183 AML patients, selected to represent most genetically defined (WHO) groups (Barinka et al., bioRxiv 2026, doi:10.64898/2026.08.25.746926). This dataset had been annotated by projection on a healthy reference (Triana et al., Nat. Immunol. 2021), to identify the most similar healthy cell type / differentiation state for each cell. We subsetted to cells corresponding to stem and progenitor cells (i.e. up to the promyelocyte stage, and excluding cells resembling mature monocytes, and other mature myeloid, erythroid and lymphoid cells), and summed raw read counts per patient (not shown)
 
 ```{r prepareSeurat, eval=T, warning=F, message=F}
 meta <- readRDS("data_AML/metadata.rds") #contains AML-specific transcriptime derived scores
@@ -78,14 +78,14 @@ other_predictors <- c("mean_G2M_score_progenitors", "mean_S_score_progenitors",s
 #overall survival: all patients
 grp2output_os <- associate_survival_outcome(result, meta, "OS_status", "OS_days", other.predictors = other_predictors, run.ML = T, replicates = 10, cores = 10, arbitrary.models = models)
 saveRDS(grp2output_os, file = "grp2output_os.rds")
-#overall survival: patients treated with intensive chemotherapy
-# intensely_treated <- rownames(meta)[meta$therapy_group == "intensive" & !is.na(meta$best_response_chemo)] 
-# meta$response <- meta$best_response_chemo == "CR"
-# grp2output_response <- associate_binary_outcome(subset(result, include = intensely_treated), meta[intensely_treated,], "response", other.predictors = other_predictors, run.ML = T, replicates = 10, cores = 10, arbitrary.models = models)
-# 
-# #relapse: Patients who received allo
-# with_allo <- rownames(meta)[!is.na(meta$relapse_after_allo_status)]
-# grp2output_rfs <- associate_survival_outcome(subset(result, include = with_allo), meta[with_allo,], "relapse_after_allo_status", "relapse_after_allo_days", other.predictors = other_predictors, run.ML = T, replicates = 10, cores = 10, arbitrary.models = models)
+# overall survival: patients treated with intensive chemotherapy
+intensely_treated <- rownames(meta)[meta$therapy_group == "intensive" & !is.na(meta$best_response_chemo)]
+meta$response <- meta$best_response_chemo == "CR"
+grp2output_response <- associate_binary_outcome(subset(result, include = intensely_treated), meta[intensely_treated,], "response", other.predictors = other_predictors, run.ML = F)
+
+#relapse: Patients who received allo
+with_allo <- rownames(meta)[!is.na(meta$relapse_after_allo_status)]
+grp2output_rfs <- associate_survival_outcome(subset(result, include = with_allo), meta[with_allo,], "relapse_after_allo_status", "relapse_after_allo_days", other.predictors = other_predictors, run.ML = F)
 
 ```
 
@@ -94,7 +94,7 @@ saveRDS(grp2output_os, file = "grp2output_os.rds")
 ### Figure 4A
 
 ```{r figure4a, fig.width=4.2, fig.height=1.4}
-aml <- list(os = grp2output_os)
+aml <- list(os = grp2output_os, response = grp2output_response, rfs = grp2output_rfs)
 pvalues <- lapply(aml, "[[", 1)
 pvalues <- lapply(names(pvalues), function(n) {
   x <- pvalues[[n]]
@@ -120,10 +120,10 @@ pvalues <- merge(pvalues, factor_annotation)
 fig4a <- ggplot(aes(x = factor_id, y = outcome), data = subset(pvalues, (disease == "AML" & outcome %in% c("RESPONSE", "RFS", "OS") ))) + 
   geom_blank() +
   geom_tile(aes(fill =show_value), data = subset(pvalues, (disease == "AML" & outcome %in% c("RESPONSE", "RFS", "OS")) & p_outcome < 0.05 & sign_outcome * multiply_with == -1)) +
-  scale_fill_gradientn(name = "p-value (neg)", colors = c("white","lightblue","blue", "blue", "darkblue"), breaks = c(-log10(0.05), -log10(0.1 / (20*6)), 4), labels = c("0.05", "Bonferroni", "1e-4"), limits = c(-log10(0.05), max(pvalues$show_value)), na.value = "white") +
+  scale_fill_gradientn(name = "p-value (neg)", colors = c("white","lightblue","blue", "blue", "darkblue"), breaks = c(-log10(0.05), -log10(0.1 / (19*3)), 4), labels = c("0.05", "Bonferroni", "1e-4"), limits = c(-log10(0.05), max(pvalues$show_value)), na.value = "white") +
   new_scale_fill() + 
   geom_tile(aes(fill =show_value),data = subset(pvalues, (disease == "AML" & outcome %in% c("RESPONSE", "RFS", "OS")) & p_outcome < 0.05 & sign_outcome * multiply_with == 1)) +
-  scale_fill_gradientn(name = "p-value (pos)", colors = c("white","#FFAAAA","red", "red", "darkred"), breaks = c(-log10(0.05), -log10(0.1 / (20*6)), 4), labels = c("0.05", "Bonferroni", "1e-4"), limits = c(-log10(0.05), max(pvalues$show_value)), na.value = "white") +
+  scale_fill_gradientn(name = "p-value (pos)", colors = c("white","#FFAAAA","red", "red", "darkred"), breaks = c(-log10(0.05), -log10(0.1 / (19*3)), 4), labels = c("0.05", "Bonferroni", "1e-4"), limits = c(-log10(0.05), max(pvalues$show_value)), na.value = "white") +
   scale_y_discrete(labels = c("RESPONSE" = "Response"), name = "Outcome") +  scale_x_discrete(name = "GRP", labels = ylabels) +
   theme_bw() + theme( panel.grid = element_blank()) + scale_size_area(guide= "none", max_size = 3) +
   geom_text(aes(label = ifelse(p.adjust(p_outcome,"fdr") < 0.1, "*", "")), color = "white",size=4) + 
@@ -184,7 +184,7 @@ by.who.and.tertile <- ddply(meta, c("age_discrete","WHO_25", "f20discrete"), sum
 by.who.and.age <- ddply(meta, c("age_discrete","WHO_25"), summarise, total= length(age_discrete))
 by.who.and.tertile <- merge(by.who.and.tertile, by.who.and.age)
 by.who.and.tertile$fraction <- with(by.who.and.tertile, n/total)
-genoplot2 <- ggplot(aes(x = f20discrete, y = WHO_25, color = 100*surv, size=n),data = by.who.and.tertile) + geom_point() + facet_wrap(~age_discrete) + theme_bw() + theme(panel.grid = element_blank()) + scale_color_viridis_c(name = "% alive after\n5 years") + scale_size_area(name = "Number") + ylab("WHO25 classification") + scale_x_continuous(breaks =1:3, name = "GRP1 (Tertile)") + coord_cartesian(xlim = c(0.8,3.2))
+genoplot2 <- ggplot(aes(x = f20discrete, y = WHO_25, color = 100*surv, size=n),data = by.who.and.tertile) + geom_point() + facet_wrap(~age_discrete) + theme_bw() + theme(panel.grid = element_blank()) + scale_color_viridis_c(name = "% alive after\n3 years") + scale_size_area(name = "Number") + ylab("WHO25 classification") + scale_x_continuous(breaks =1:3, name = "GRP1 (Tertile)") + coord_cartesian(xlim = c(0.8,3.2))
 
 print(genoplot2)
 

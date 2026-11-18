@@ -196,20 +196,27 @@ ggplot(response_summary, aes(stratum, response, color = score)) +
 ## Compare predictive performance
 
 The best single GRP is selected within each training fold; the LASSO GRP model
-combines the decomposed programs. All displayed AUCs are based on held-out
-predictions. Models with missing scores may be evaluated on fewer samples.
+combines the decomposed programs. The full-transcriptome upper bound is the best
+of the transcriptome-wide models (principal component regression, LASSO, and
+DE-based regression), as in the other vignettes. All displayed AUCs are based on
+held-out predictions. Models with missing scores may be evaluated on fewer samples.
 
 ```{r auc-plot, fig.width=6, fig.height=3}
 model_labels <- c(
   AUC.best.factor = "Best single GRP", AUC.lasso.factors = "GRPs (LASSO)",
   "3 Gene score" = "3 Gene score", "ELN22 risk" = "ELN22 risk",
-  "New Score" = "New Score", "MAC Score" = "MAC Score"
+  "New Score" = "New Score", "MAC Score" = "MAC Score",
+  "Full transcriptome (ML)" = "Full transcriptome (ML)"
 )
+ml_models <- c("AUC.logit.de", "AUC.lasso.de", "AUC.logit.pcr", "AUC.lasso.pcr")
 performance <- data.frame(
   model = names(grp2output_vv$aucs), auc = grp2output_vv$aucs,
   sd = grp2output_vv$aucs.sd
 )
-performance <- subset(performance, model %in% names(model_labels))
+best_ml <- subset(performance, model %in% ml_models)
+best_ml <- best_ml[which.max(best_ml$auc), , drop = FALSE]
+best_ml$model <- "Full transcriptome (ML)"
+performance <- rbind(subset(performance, model %in% names(model_labels)), best_ml)
 performance$model <- factor(performance$model, levels = rev(names(model_labels)))
 ggplot(performance, aes(auc, model)) +
   geom_point() +

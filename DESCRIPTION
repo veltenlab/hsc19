@@ -37,6 +37,8 @@ Imports:
   pheatmap
 Suggests:
   rmarkdown,
-  knitr
+  knitr,
+  anndata,
+  scales
 RoxygenNote: 7.3.2
 VignetteBuilder: knitr

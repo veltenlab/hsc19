@@ -2,7 +2,7 @@
 title: "Decomposition of human ageing"
 output: rmarkdown::html_vignette
 vignette: >
-  %\VignetteIndexEntry{Basic package usage: Human Ageing (Figure 3B,C)}
+  %\VignetteIndexEntry{Basic package usage: Human Ageing (Figure S8)}
   %\VignetteEngine{knitr::rmarkdown}
   %\VignetteEncoding{UTF-8}
 ---
@@ -118,6 +118,8 @@ result <- decompose(s = S)
 
 ## Compute p-values: Association of GRPs with age (Figure S8B)
 
+Only associations with FDR < 0.1 (Benjamini-Hochberg across the GRPs) are shown, as in the manuscript.
+
 The `associate` function, in its basic use, computes p-value associations between programs and a feature/outcome of interest from a metadata frame. Rows in the metadata frame should correspond to columns from the seurat object used for decomposition. The below example computes p values for the association between (estimated) program activities and the metadata variable "age". 
 
 There are different versions of `associate`, for numeric, binary and survival outcomes.
@@ -125,18 +127,17 @@ There are different versions of `associate`, for numeric, binary and survival ou
 ```{r pvalues, fig.width=5.5, fig.height=2.5}
 pvalues <- associate_numeric_outcome(result, metadata_final, "age", run.ML = F)$p.values
 
-pvalues$show_value <- with(pvalues, ifelse(p_outcome < 0.05, -log10(p_outcome), -log10(0.05)))
+pvalues <- subset(pvalues, grepl("Factor_", factor_id))
+pvalues$fdr <- p.adjust(pvalues$p_outcome, "fdr")
+pvalues$show_value <- -log10(pvalues$p_outcome)
 factor_levels <- get_factor_columns(result)
 pvalues$factor_id <- factor(pvalues$factor_id, levels = factor_levels)
-ylabels <- gsub("Factor_", "", factor_annotation$factor_id); names(ylabels) <- factor_annotation$factor_id
-any_sig <- sapply(names(ylabels), function(x) any(pvalues$p_outcome[pvalues$factor_id == x] < 0.01))
-ylabels[!any_sig] <- ""
 pvalues <- merge(pvalues, factor_annotation)
 
 pvalues$xval <- with(pvalues, show_value * sign_outcome * multiply_with)
 ylab <- sprintf("%s: %s", gsub("Factor_", "GRP", factor_annotation$factor_id), factor_annotation$factor_label); names(ylab) <- factor_annotation$factor_id
 
-a <- qplot(x =  xval, y = reorder(factor_id,xval), color = as.factor(sign_outcome* multiply_with), data = subset(pvalues, p_outcome < 0.01)) +
+a <- qplot(x =  xval, y = reorder(factor_id,xval), color = as.factor(sign_outcome* multiply_with), data = subset(pvalues, fdr < 0.1)) +
   xlab("Association with age:\n-log10 p-value (signed)") + scale_y_discrete(labels = ylab, name = "GRP") + theme_bw(base_size = 14) + theme(panel.grid = element_blank()) + scale_color_manual(values = c("-1" = "darkblue", "1"= "darkred"), guide =F)
  print(a)
 ```
@@ -153,6 +154,7 @@ print(b)
 First, run 10-fold CV with the factors to predict age
 
 ```{r grpclock}
+set.seed(3719)
 factors <- rownames(result@result)[-1]
 sets <- rep(1:10, length.out = ncol(S))
 sh <- sample(1:ncol(S))
@@ -174,18 +176,20 @@ for (i in 1:10) {
 Besides computing p-values, the `associate` function can also run and compare several black box machine learning strategies to predict the outcome/feature of interest from the transcriptome, beyond GRPs. It runs principal component regression, LASSO regression and differential expression testing followed by LASSO or linear regression on top DE features. ML is performed inside a 10-fold cross-validation loop. The best GRP is selected independently in each cross validation loop. The function can also compare GRPs to further, prespecified predictors (e.g. gene signatures from literature); see the remaining vignettes and the function documentation for these parameters, and documentation of the return value.
 
 ```{r associateML}
+set.seed(3719)
 ml <- associate_numeric_outcome(result, metadata_final, "age", other.predictors = NULL, run.ML = T, replicates = 10, cores = 10, genelists = NULL)
 ```
 
-Finally, make a plot that compares the predictive power of GRP3, the linear model from all GRPs, and the black-box machine learning result
+Finally, make a plot that compares the predictive power of GRP3 (squared correlation on all samples, not cross-validated), the linear model from all GRPs (10-fold CV), and the best transcriptome-wide black-box machine learning model (principal component regression, LASSO, or DE-based regression; 10-fold CV, mean over replicates). Models built on GRPs are not eligible for the "full transcriptome" bar.
 
 ```{r plotClock, fig.width=3.5,fig.height=2.5}
+ml_models <- c("R2.lm.de", "R2.lasso.de", "R2.lm.pcr", "R2.lasso.pcr")
 r2s <- data.frame(
   what = factor(c("GRP 3", "All GRPs", "Full transcriptome"),levels = c("GRP 3", "All GRPs", "Full transcriptome")),
-  R2 = c(cor(result@result[ "Factor_3", ], metadata_final$age)^2,cor(predicted.linear, response)^2, max(ml$r.squares, na.rm=T) )
+  R2 = c(cor(result@result[ "Factor_3", ], metadata_final$age)^2,cor(predicted.linear, response)^2, max(ml$r.squares[ml_models], na.rm=T) )
 )
 
-d <- ggplot(aes(x = what, y = R2), data = r2s) + geom_col() + coord_flip()  +theme_bw(base_size = 14) + theme(panel.grid = element_blank()) + xlab("Predictor") + ylab("R2 in 10-fold CV")
+d <- ggplot(aes(x = what, y = R2), data = r2s) + geom_col() + coord_flip()  +theme_bw(base_size = 14) + theme(panel.grid = element_blank()) + xlab("Predictor") + ylab("R2\n(GRP 3: all samples; others: 10-fold CV)")
 print(d)
 
 ```
