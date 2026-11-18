@@ -4,10 +4,10 @@ To install, in R run `devtools::install_local("~/Downloads/hsc19-main")` (assumi
 
 For usage info and to reproduce figures 3, 4 and S8 from Bowness et al., 2026, see package vignettes. We recommend starting with the Ageing vignette, which illustrates the main functionalities of the package. Pre-rendered vignettes are available:
 
-* [Vignette 01: Ageing (Figure S8)] (https://htmlpreview.github.io/?https://github.com/veltenlab/hsc19/blob/main/vignettes/output/01_Ageing.html)
-* [Vignette 02: LARRY/DARLIN (Figures 3B-G)] (https://htmlpreview.github.io/?https://github.com/veltenlab/hsc19/blob/main/vignettes/output/02_LARRY_DARLIN.html)
-* [Vignette 03: AML survival (Figures 4A-D)] (https://htmlpreview.github.io/?https://github.com/veltenlab/hsc19/blob/main/vignettes/output/03_AML_survival.html)
-* [Vignette 03: AML Venetoclax response (Figures 4E-G)] (https://htmlpreview.github.io/?https://github.com/veltenlab/hsc19/blob/main/vignettes/output/04_venetoclax.html)
+* [Vignette 01: Ageing (Figure S8)](https://htmlpreview.github.io/?https://github.com/veltenlab/hsc19/blob/main/vignettes/output/01_Ageing.html)
+* [Vignette 02: LARRY/DARLIN (Figures 3B-G)](https://htmlpreview.github.io/?https://github.com/veltenlab/hsc19/blob/main/vignettes/output/02_LARRY_DARLIN.html)
+* [Vignette 03: AML survival (Figures 4A-D)](https://htmlpreview.github.io/?https://github.com/veltenlab/hsc19/blob/main/vignettes/output/03_AML_survival.html)
+* [Vignette 03: AML Venetoclax response (Figures 4E-G)](https://htmlpreview.github.io/?https://github.com/veltenlab/hsc19/blob/main/vignettes/output/04_venetoclax.html)
 
 To reproduce figures 1&2, see folder `manuscript_figures`.
 
